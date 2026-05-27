@@ -72,7 +72,13 @@ function modelsFromUnknown(value: unknown): RuntimeModel[] | undefined {
   if (Array.isArray(value)) return value as RuntimeModel[];
 
   if (isRecord(value)) {
-    return Object.values(value) as RuntimeModel[];
+    return Object.entries(value).map(([modelName, model]) => {
+      if (!isRecord(model) || typeof model.name === "string") {
+        return model as RuntimeModel;
+      }
+
+      return { ...model, name: modelName } as RuntimeModel;
+    });
   }
 
   return undefined;

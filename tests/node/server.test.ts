@@ -392,6 +392,56 @@ describe("createPrismaApiMiddleware", () => {
       },
     });
   });
+
+  it("rejects writes to row endpoints before reaching Prisma delegates", async () => {
+    const delegateCalls: string[] = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [field({ name: "id", type: "String", isId: true })],
+            },
+          },
+        },
+        user: {
+          findMany: async () => {
+            delegateCalls.push("user.findMany");
+            return [];
+          },
+          create: async () => {
+            delegateCalls.push("user.create");
+            return {};
+          },
+          update: async () => {
+            delegateCalls.push("user.update");
+            return {};
+          },
+          delete: async () => {
+            delegateCalls.push("user.delete");
+            return {};
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+
+    const response = await runMiddleware(middleware, {
+      method: "DELETE",
+      url: "/api/models/User/rows",
+    });
+
+    expect(response.statusCode).toBe(405);
+    expect(response.headers.Allow).toBe("GET");
+    expect(delegateCalls).toEqual([]);
+    expect(JSON.parse(response.body)).toEqual({
+      error: {
+        code: "METHOD_NOT_ALLOWED",
+        message: "Prisma Viewer exposes only read-only API endpoints.",
+      },
+    });
+  });
 });
 
 function makeContext(): StartupContext {

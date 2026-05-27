@@ -1,6 +1,5 @@
 import {
   ChevronDown,
-  Columns3,
   Database,
   FileJson,
   RefreshCcw,
@@ -44,6 +43,8 @@ type RowLoadState =
   | { status: "success"; rows: Record<string, unknown>[]; error: null }
   | { status: "error"; rows: Record<string, unknown>[]; error: string };
 
+type PreviewMode = "fields" | "json";
+
 function formatValue(value: unknown) {
   if (value === null) return "NULL";
   if (value === undefined) return "";
@@ -70,6 +71,29 @@ function formatFieldType(field: Field) {
   const listSuffix = field.isList ? "[]" : "";
   const requiredSuffix = field.isRequired ? "" : "?";
   return `${field.type}${listSuffix}${requiredSuffix}`;
+}
+
+function toStableJsonValue(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (typeof value === "bigint") return value.toString();
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) {
+    return value.map((item) => toStableJsonValue(item, seen));
+  }
+  if (value && typeof value === "object") {
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, toStableJsonValue(item, seen)]),
+    );
+  }
+  return value;
+}
+
+function formatJsonPreview(row: Record<string, unknown>) {
+  return JSON.stringify(toStableJsonValue(row), null, 2);
 }
 
 function formatRowSummary(rowState: RowLoadState, columnCount: number) {
@@ -129,7 +153,8 @@ export function App() {
     error: null,
   });
   const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
-  const [previewMode, setPreviewMode] = useState("fields");
+  const [previewMode, setPreviewMode] = useState<PreviewMode>("fields");
+  const [rowRefreshKey, setRowRefreshKey] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -184,7 +209,11 @@ export function App() {
     const controller = new AbortController();
     const modelName = selectedModel.name;
 
-    setRowState({ status: "loading", rows: [], error: null });
+    setRowState((current) => ({
+      status: "loading",
+      rows: current.rows,
+      error: null,
+    }));
     setSelectedRowIndex(null);
     fetchModelRows(modelName, controller.signal)
       .then((rows) => {
@@ -198,10 +227,21 @@ export function App() {
       });
 
     return () => controller.abort();
-  }, [selectedModel?.name]);
+  }, [selectedModel?.name, rowRefreshKey]);
 
   function selectModel(modelName: string) {
     setSelectedModelName(modelName);
+  }
+
+  function refreshRows() {
+    if (!selectedModel) return;
+    setRowRefreshKey((current) => current + 1);
+  }
+
+  function updatePreviewMode(value: string) {
+    if (value === "fields" || value === "json") {
+      setPreviewMode(value);
+    }
   }
 
   return (
@@ -212,12 +252,23 @@ export function App() {
           <div className="min-w-0">
             <h1 className="truncate text-sm font-semibold">Prisma Viewer</h1>
             <p className="truncate text-xs text-muted-foreground">
-              local development database
+              read-only local database viewer
             </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" type="button">
+          <span className="hidden rounded border border-border bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground sm:inline-flex">
+            Read-only
+          </span>
+          <Button
+            variant="outline"
+            type="button"
+            onClick={refreshRows}
+            disabled={!selectedModel || rowState.status === "loading"}
+            aria-label={
+              selectedModel ? `Refresh ${selectedModel.name} rows` : "Refresh rows"
+            }
+          >
             <RefreshCcw className="h-3.5 w-3.5" aria-hidden="true" />
             Refresh
           </Button>
@@ -290,9 +341,6 @@ export function App() {
                   : "Load metadata to inspect model fields"}
               </p>
             </div>
-            <Button variant="ghost" size="icon" type="button" aria-label="Columns">
-              <Columns3 className="h-4 w-4" aria-hidden="true" />
-            </Button>
           </div>
 
           <div className="h-[45vh] overflow-auto lg:h-[calc(100vh-5.75rem)]">
@@ -403,19 +451,19 @@ export function App() {
           <div className="p-3">
             {selectedRow ? (
               <>
-                <Tabs value={previewMode} onValueChange={setPreviewMode}>
+                <Tabs value={previewMode} onValueChange={updatePreviewMode}>
                   <TabsList className="mb-3">
                     <TabsTrigger
                       value="fields"
                       currentValue={previewMode}
-                      onValueChange={setPreviewMode}
+                      onValueChange={updatePreviewMode}
                     >
                       Fields
                     </TabsTrigger>
                     <TabsTrigger
                       value="json"
                       currentValue={previewMode}
-                      onValueChange={setPreviewMode}
+                      onValueChange={updatePreviewMode}
                     >
                       <span className="inline-flex items-center gap-1">
                         <FileJson className="h-3 w-3" />
@@ -456,8 +504,11 @@ export function App() {
                     ))}
                   </dl>
                 ) : (
-                  <pre className="max-h-[34rem] overflow-auto rounded-md border border-border bg-background p-3 text-[11px] leading-5">
-                    {JSON.stringify(selectedRow, null, 2)}
+                  <pre
+                    aria-label="Selected record JSON preview"
+                    className="max-h-[34rem] max-w-full overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-[11px] leading-5"
+                  >
+                    {formatJsonPreview(selectedRow)}
                   </pre>
                 )}
               </>

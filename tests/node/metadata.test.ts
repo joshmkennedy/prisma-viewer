@@ -113,6 +113,51 @@ describe("discoverPrismaMetadata", () => {
     });
   });
 
+  it("uses runtime data model map keys when generated model objects omit names", () => {
+    const metadata = discoverPrismaMetadata({
+      _runtimeDataModel: {
+        models: {
+          User: {
+            fields: [
+              field({ name: "id", type: "Int", isId: true }),
+              field({ name: "email", type: "String", isUnique: true }),
+            ],
+          },
+        },
+      },
+    });
+
+    expect(metadata.models).toEqual([
+      {
+        name: "User",
+        fields: [
+          {
+            name: "id",
+            kind: "scalar",
+            type: "Int",
+            isList: false,
+            isRequired: true,
+            isUnique: false,
+            isId: true,
+            hasDefaultValue: false,
+            relationName: null,
+          },
+          {
+            name: "email",
+            kind: "scalar",
+            type: "String",
+            isList: false,
+            isRequired: true,
+            isUnique: true,
+            isId: false,
+            hasDefaultValue: false,
+            relationName: null,
+          },
+        ],
+      },
+    ]);
+  });
+
   it("discovers model and field metadata from DMMF-compatible arrays", () => {
     const metadata = discoverPrismaMetadata({
       _dmmf: {

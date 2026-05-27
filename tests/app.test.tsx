@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/app";
@@ -150,6 +150,48 @@ describe("App row table", () => {
     expect(screen.getByText("database disconnected")).toBeTruthy();
   });
 
+  it("refreshes the selected model rows without exposing mutation controls", async () => {
+    let userRows: Record<string, unknown>[] = [
+      { id: "user_1", email: "ada@example.com" },
+    ];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/models") {
+        return {
+          ok: true,
+          json: async () => ({ models: [model("User", ["id", "email"])] }),
+        };
+      }
+
+      if (url === "/api/models/User/rows?page=1&pageSize=50") {
+        return {
+          ok: true,
+          json: async () => ({ model: "User", rows: userRows }),
+        };
+      }
+
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    expect(await screen.findByText("ada@example.com")).toBeTruthy();
+    expect(screen.getByText("Read-only")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /create|edit|delete|save|update/i })).toBeNull();
+
+    userRows = [{ id: "user_2", email: "grace@example.com" }];
+    await userEvent.click(screen.getByRole("button", { name: "Refresh User rows" }));
+
+    expect(await screen.findByText("grace@example.com")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText("ada@example.com")).toBeNull());
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/models/User/rows?page=1&pageSize=50",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
   it("selects a table row and renders the record preview", async () => {
     mockApiResponses({
       models: [model("User", ["id", "email"])],
@@ -226,6 +268,75 @@ describe("App row table", () => {
     expect(within(preview as HTMLElement).getByText('["audit","team"]')).toBeTruthy();
     expect(within(preview as HTMLElement).getByText(longToken)).toBeTruthy();
     expect(within(preview as HTMLElement).getByText("NULL")).toBeTruthy();
+  });
+
+  it("switches the selected record preview between fields and stable formatted JSON", async () => {
+    const longToken = "token.".repeat(40);
+    mockApiResponses({
+      models: [
+        {
+          ...model("AuditLog", ["id", "payload", "tags", "description"]),
+          fields: [
+            field("id", "String"),
+            field("payload", "Json"),
+            field("tags", "Json"),
+            field("description", "String"),
+          ],
+        },
+      ],
+      rowsByModel: {
+        AuditLog: [
+          {
+            id: "log_1",
+            payload: {
+              zebra: "last",
+              action: "invite.created",
+              nested: { count: 2, actors: ["ada", "grace"] },
+            },
+            tags: ["audit", "team"],
+            description: longToken,
+          },
+        ],
+      },
+    });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByText("log_1"));
+
+    expect(
+      screen.getAllByText(
+        '{"zebra":"last","action":"invite.created","nested":{"count":2,"actors":["ada","grace"]}}',
+      ).length,
+    ).toBeGreaterThan(1);
+
+    await userEvent.click(screen.getByRole("button", { name: "JSON" }));
+
+    const jsonPreview = screen.getByLabelText("Selected record JSON preview");
+    expect(jsonPreview.textContent).toBe(
+      JSON.stringify(
+        {
+          description: longToken,
+          id: "log_1",
+          payload: {
+            action: "invite.created",
+            nested: { actors: ["ada", "grace"], count: 2 },
+            zebra: "last",
+          },
+          tags: ["audit", "team"],
+        },
+        null,
+        2,
+      ),
+    );
+    expect(jsonPreview.textContent).toContain(
+      '\n      "actors": [\n        "ada",\n        "grace"\n      ]',
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Fields" }));
+
+    expect(screen.queryByLabelText("Selected record JSON preview")).toBeNull();
+    expect(screen.getAllByText(longToken).length).toBeGreaterThan(1);
   });
 });
 
