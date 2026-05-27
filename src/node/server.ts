@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer, type ViteDevServer } from "vite";
+import { createPrismaApiMiddleware } from "./api.js";
+import { createTargetPrismaRuntime, type PrismaRuntime } from "./prisma.js";
 import type { StartupContext } from "./startup.js";
 
 export type ServerOptions = {
@@ -9,6 +11,7 @@ export type ServerOptions = {
   port?: number;
   viewerRoot?: string;
   createServerImpl?: typeof createServer;
+  createPrismaRuntimeImpl?: (context: StartupContext) => Promise<PrismaRuntime>;
 };
 
 export type StartedServer = {
@@ -21,19 +24,31 @@ export async function startViewerServer(
   options: ServerOptions = {},
 ): Promise<StartedServer> {
   const viewerRoot = options.viewerRoot ?? findViewerRoot();
-  const server = await (options.createServerImpl ?? createServer)({
-    root: viewerRoot,
-    configFile: join(viewerRoot, "vite.config.ts"),
-    server: {
-      host: options.host ?? "127.0.0.1",
-      port: options.port ?? 0,
-    },
-    define: {
-      __PRISMA_VIEWER_APP_ROOT__: JSON.stringify(context.appRoot),
-    },
-  });
+  const prismaRuntime = await (options.createPrismaRuntimeImpl ?? createTargetPrismaRuntime)(
+    context,
+  );
+  let server: ViteDevServer | undefined;
 
-  await server.listen();
+  try {
+    server = await (options.createServerImpl ?? createServer)({
+      root: viewerRoot,
+      configFile: join(viewerRoot, "vite.config.ts"),
+      server: {
+        host: options.host ?? "127.0.0.1",
+        port: options.port ?? 0,
+      },
+      define: {
+        __PRISMA_VIEWER_APP_ROOT__: JSON.stringify(context.appRoot),
+      },
+    });
+
+    server.middlewares.use(createPrismaApiMiddleware(prismaRuntime));
+    bindPrismaLifecycle(server, prismaRuntime);
+    await server.listen();
+  } catch (error) {
+    await prismaRuntime.disconnect().catch(() => undefined);
+    throw error;
+  }
 
   const address = server.httpServer?.address();
   const port = typeof address === "object" && address ? address.port : options.port;
@@ -42,6 +57,14 @@ export async function startViewerServer(
   return {
     server,
     url: `http://${host}:${port ?? 5173}/`,
+  };
+}
+
+function bindPrismaLifecycle(server: ViteDevServer, prismaRuntime: PrismaRuntime) {
+  const close = server.close.bind(server);
+  server.close = async () => {
+    await prismaRuntime.disconnect();
+    await close();
   };
 }
 

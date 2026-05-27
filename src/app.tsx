@@ -7,127 +7,42 @@ import {
   Search,
   TableProperties,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "./components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { cn } from "./lib/utils";
 
 type Field = {
   name: string;
+  kind: "scalar" | "object" | "enum" | "unsupported";
   type: string;
+  isList: boolean;
+  isRequired: boolean;
 };
 
 type Model = {
   name: string;
-  rowCount: number;
   fields: Field[];
+};
+
+type MetadataResponse = {
+  models: Model[];
+};
+
+type RowsResponse = {
   rows: Record<string, unknown>[];
 };
 
-const models: Model[] = [
-  {
-    name: "User",
-    rowCount: 428,
-    fields: [
-      { name: "id", type: "String" },
-      { name: "email", type: "String" },
-      { name: "name", type: "String?" },
-      { name: "role", type: "String" },
-      { name: "createdAt", type: "DateTime" },
-      { name: "metadata", type: "Json" },
-    ],
-    rows: [
-      {
-        id: "usr_01HV8ZB7AQ9F",
-        email: "nora.chen@example.dev",
-        name: "Nora Chen",
-        role: "admin",
-        createdAt: "2026-05-19T14:22:31.000Z",
-        metadata: { plan: "team", flags: ["beta_tables", "json_preview"] },
-      },
-      {
-        id: "usr_01HV8ZBSJTXR",
-        email: "miles.gray@example.dev",
-        name: null,
-        role: "developer",
-        createdAt: "2026-05-20T09:10:08.000Z",
-        metadata: { plan: "free", source: "seed" },
-      },
-      {
-        id: "usr_01HV91MG2V01",
-        email: "leah.patel@example.dev",
-        name: "Leah Patel",
-        role: "viewer",
-        createdAt: "2026-05-21T18:45:12.000Z",
-        metadata: { plan: "pro", lastWorkspace: "workspace_42" },
-      },
-    ],
-  },
-  {
-    name: "Project",
-    rowCount: 64,
-    fields: [
-      { name: "id", type: "String" },
-      { name: "slug", type: "String" },
-      { name: "name", type: "String" },
-      { name: "status", type: "String" },
-      { name: "updatedAt", type: "DateTime" },
-    ],
-    rows: [
-      {
-        id: "prj_7cc5",
-        slug: "billing-ledger",
-        name: "Billing Ledger",
-        status: "active",
-        updatedAt: "2026-05-26T22:14:50.000Z",
-      },
-      {
-        id: "prj_8af1",
-        slug: "internal-tools",
-        name: "Internal Tools",
-        status: "paused",
-        updatedAt: "2026-05-24T11:33:21.000Z",
-      },
-    ],
-  },
-  {
-    name: "AuditLog",
-    rowCount: 12043,
-    fields: [
-      { name: "id", type: "BigInt" },
-      { name: "actorId", type: "String" },
-      { name: "action", type: "String" },
-      { name: "resource", type: "String" },
-      { name: "payload", type: "Json" },
-      { name: "createdAt", type: "DateTime" },
-    ],
-    rows: [
-      {
-        id: 983421,
-        actorId: "usr_01HV8ZB7AQ9F",
-        action: "workspace.member.invited",
-        resource: "workspace_42",
-        payload: {
-          email: "sam.rivera@example.dev",
-          role: "viewer",
-          inviteId: "inv_91ab",
-        },
-        createdAt: "2026-05-26T13:04:19.000Z",
-      },
-    ],
-  },
-  {
-    name: "Session",
-    rowCount: 816,
-    fields: [
-      { name: "id", type: "String" },
-      { name: "userId", type: "String" },
-      { name: "expiresAt", type: "DateTime" },
-      { name: "ipAddress", type: "String?" },
-    ],
-    rows: [],
-  },
-];
+type ModelLoadState =
+  | { status: "loading"; models: Model[]; error: null }
+  | { status: "success"; models: Model[]; error: null }
+  | { status: "error"; models: Model[]; error: string };
+
+type RowLoadState =
+  | { status: "idle"; rows: Record<string, unknown>[]; error: null }
+  | { status: "loading"; rows: Record<string, unknown>[]; error: null }
+  | { status: "success"; rows: Record<string, unknown>[]; error: null }
+  | { status: "error"; rows: Record<string, unknown>[]; error: string };
 
 function formatValue(value: unknown) {
   if (value === null) return "NULL";
@@ -142,27 +57,151 @@ function formatValue(value: unknown) {
   return String(value);
 }
 
+function getCellTone(value: unknown) {
+  if (value === null) return "null";
+  if (typeof value === "boolean") return "boolean";
+  if (typeof value === "number" || typeof value === "bigint") return "number";
+  if (typeof value === "object") return "json";
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T/.test(value)) return "date";
+  return "text";
+}
+
+function formatFieldType(field: Field) {
+  const listSuffix = field.isList ? "[]" : "";
+  const requiredSuffix = field.isRequired ? "" : "?";
+  return `${field.type}${listSuffix}${requiredSuffix}`;
+}
+
+function formatRowSummary(rowState: RowLoadState, columnCount: number) {
+  const columnLabel = columnCount === 1 ? "column" : "columns";
+
+  if (rowState.status === "loading") {
+    return `Loading rows, ${columnCount} ${columnLabel} shown`;
+  }
+
+  if (rowState.status === "error") {
+    return `Rows unavailable, ${columnCount} ${columnLabel} shown`;
+  }
+
+  const rowLabel = rowState.rows.length === 1 ? "row" : "rows";
+  return `${rowState.rows.length} ${rowLabel} loaded, ${columnCount} ${columnLabel} shown`;
+}
+
+async function fetchModelMetadata(signal: AbortSignal): Promise<Model[]> {
+  const response = await fetch("/api/models", { signal });
+
+  if (!response.ok) {
+    throw new Error(`Metadata API returned ${response.status}`);
+  }
+
+  const body = (await response.json()) as MetadataResponse;
+  return body.models;
+}
+
+async function fetchModelRows(
+  modelName: string,
+  signal: AbortSignal,
+): Promise<Record<string, unknown>[]> {
+  const response = await fetch(
+    `/api/models/${encodeURIComponent(modelName)}/rows?page=1&pageSize=50`,
+    { signal },
+  );
+
+  if (!response.ok) {
+    throw new Error(`Rows API returned ${response.status}`);
+  }
+
+  const body = (await response.json()) as RowsResponse;
+  return body.rows;
+}
+
 export function App() {
   const [search, setSearch] = useState("");
-  const [selectedModelName, setSelectedModelName] = useState(models[0].name);
-  const [selectedRowIndex, setSelectedRowIndex] = useState(0);
+  const [modelState, setModelState] = useState<ModelLoadState>({
+    status: "loading",
+    models: [],
+    error: null,
+  });
+  const [selectedModelName, setSelectedModelName] = useState<string | null>(null);
+  const [rowState, setRowState] = useState<RowLoadState>({
+    status: "idle",
+    rows: [],
+    error: null,
+  });
+  const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
   const [previewMode, setPreviewMode] = useState("fields");
 
+  useEffect(() => {
+    const controller = new AbortController();
+
+    setModelState({ status: "loading", models: [], error: null });
+    fetchModelMetadata(controller.signal)
+      .then((models) => {
+        setModelState({ status: "success", models, error: null });
+        setSelectedModelName((current) => current ?? models[0]?.name ?? null);
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Could not load Prisma model metadata.";
+        setModelState({ status: "error", models: [], error: message });
+        setSelectedModelName(null);
+      });
+
+    return () => controller.abort();
+  }, []);
+
+  const models = modelState.models;
   const filteredModels = useMemo(
     () =>
       models.filter((model) =>
         model.name.toLowerCase().includes(search.trim().toLowerCase()),
       ),
-    [search],
+    [models, search],
   );
 
   const selectedModel =
-    models.find((model) => model.name === selectedModelName) ?? models[0];
-  const selectedRow = selectedModel.rows[selectedRowIndex] ?? null;
+    models.find((model) => model.name === selectedModelName) ?? models[0] ?? null;
+  const tableFields = useMemo(
+    () =>
+      selectedModel?.fields.filter(
+        (field) => field.kind === "scalar" || field.kind === "enum",
+      ) ?? [],
+    [selectedModel],
+  );
+  const selectedRow =
+    selectedRowIndex === null ? null : (rowState.rows[selectedRowIndex] ?? null);
+
+  useEffect(() => {
+    if (!selectedModel?.name) {
+      setRowState({ status: "idle", rows: [], error: null });
+      setSelectedRowIndex(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    const modelName = selectedModel.name;
+
+    setRowState({ status: "loading", rows: [], error: null });
+    setSelectedRowIndex(null);
+    fetchModelRows(modelName, controller.signal)
+      .then((rows) => {
+        setRowState({ status: "success", rows, error: null });
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        const message =
+          error instanceof Error ? error.message : `Could not load rows for ${modelName}.`;
+        setRowState({ status: "error", rows: [], error: message });
+      });
+
+    return () => controller.abort();
+  }, [selectedModel?.name]);
 
   function selectModel(modelName: string) {
     setSelectedModelName(modelName);
-    setSelectedRowIndex(0);
   }
 
   return (
@@ -199,20 +238,40 @@ export function App() {
             </label>
           </div>
           <nav className="max-h-52 overflow-auto p-2 lg:max-h-none">
+            {modelState.status === "loading" ? (
+              <div className="rounded-md border border-dashed border-border bg-background p-3 text-xs text-muted-foreground">
+                Loading models...
+              </div>
+            ) : modelState.status === "error" ? (
+              <div className="rounded-md border border-dashed border-border bg-background p-3 text-xs text-muted-foreground">
+                <p className="font-medium text-foreground">Could not load models.</p>
+                <p className="mt-1">{modelState.error}</p>
+              </div>
+            ) : models.length === 0 ? (
+              <div className="rounded-md border border-dashed border-border bg-background p-3 text-xs text-muted-foreground">
+                No Prisma models found.
+              </div>
+            ) : filteredModels.length === 0 ? (
+              <div className="rounded-md border border-dashed border-border bg-background p-3 text-xs text-muted-foreground">
+                No models match your search.
+              </div>
+            ) : null}
             {filteredModels.map((model) => (
               <button
                 key={model.name}
                 type="button"
                 onClick={() => selectModel(model.name)}
+                aria-label={`${model.name} model, ${model.fields.length} fields`}
+                aria-current={selectedModel?.name === model.name ? "true" : undefined}
                 className={cn(
                   "mb-1 grid w-full grid-cols-[1fr_auto] items-center gap-2 rounded-md px-2 py-2 text-left text-xs hover:bg-background",
-                  selectedModel.name === model.name &&
+                  selectedModel?.name === model.name &&
                     "bg-background text-primary shadow-sm ring-1 ring-border",
                 )}
               >
                 <span className="min-w-0 truncate font-medium">{model.name}</span>
                 <span className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
-                  {model.rowCount}
+                  {model.fields.length}
                 </span>
               </button>
             ))}
@@ -222,9 +281,13 @@ export function App() {
         <section className="min-w-0 overflow-hidden border-b border-border bg-background lg:border-b-0 lg:border-r">
           <div className="flex h-11 items-center justify-between border-b border-border px-3">
             <div className="min-w-0">
-              <h2 className="truncate text-sm font-semibold">{selectedModel.name}</h2>
+              <h2 className="truncate text-sm font-semibold">
+                {selectedModel?.name ?? "No model selected"}
+              </h2>
               <p className="text-xs text-muted-foreground">
-                {selectedModel.rows.length} loaded of {selectedModel.rowCount}
+                {selectedModel
+                  ? formatRowSummary(rowState, tableFields.length)
+                  : "Load metadata to inspect model fields"}
               </p>
             </div>
             <Button variant="ghost" size="icon" type="button" aria-label="Columns">
@@ -233,63 +296,98 @@ export function App() {
           </div>
 
           <div className="h-[45vh] overflow-auto lg:h-[calc(100vh-5.75rem)]">
-            <table className="min-w-[720px] border-collapse text-left text-xs">
-              <thead className="sticky top-0 z-10 bg-muted">
-                <tr>
-                  {selectedModel.fields.map((field) => (
-                    <th
-                      key={field.name}
-                      className="border-b border-r border-border px-3 py-2 font-medium text-muted-foreground last:border-r-0"
-                    >
-                      <span className="block truncate">{field.name}</span>
-                      <span className="block truncate font-mono text-[10px] font-normal">
-                        {field.type}
-                      </span>
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {selectedModel.rows.length === 0 ? (
+            {selectedModel ? (
+              <table className="min-w-[720px] border-collapse text-left text-xs">
+                <thead className="sticky top-0 z-10 bg-muted">
                   <tr>
-                    <td
-                      colSpan={selectedModel.fields.length}
-                      className="h-28 px-3 text-center text-xs text-muted-foreground"
-                    >
-                      No rows returned for this model.
-                    </td>
+                    {tableFields.map((field) => (
+                      <th
+                        key={field.name}
+                        className="w-44 max-w-44 border-b border-r border-border px-3 py-2 font-medium text-muted-foreground last:border-r-0"
+                      >
+                        <span className="block truncate">{field.name}</span>
+                        <span className="block truncate font-mono text-[10px] font-normal">
+                          {formatFieldType(field)}
+                        </span>
+                      </th>
+                    ))}
                   </tr>
-                ) : (
-                  selectedModel.rows.map((row, rowIndex) => (
-                    <tr
-                      key={String(row.id ?? rowIndex)}
-                      onClick={() => setSelectedRowIndex(rowIndex)}
-                      className={cn(
-                        "h-10 cursor-pointer border-b border-border hover:bg-accent/50",
-                        rowIndex === selectedRowIndex && "bg-accent/70",
-                      )}
-                    >
-                      {selectedModel.fields.map((field) => {
-                        const value = row[field.name];
-                        return (
-                          <td
-                            key={field.name}
-                            className={cn(
-                              "max-w-48 border-r border-border px-3 py-2 last:border-r-0",
-                              value === null && "font-mono text-muted-foreground",
-                            )}
-                          >
-                            <span className="block truncate">
-                              {formatValue(value)}
-                            </span>
-                          </td>
-                        );
-                      })}
+                </thead>
+                <tbody>
+                  {rowState.status === "loading" ? (
+                    <tr>
+                      <td
+                        colSpan={Math.max(tableFields.length, 1)}
+                        className="h-28 px-3 text-center text-xs text-muted-foreground"
+                      >
+                        Loading rows...
+                      </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                  ) : rowState.status === "error" ? (
+                    <tr>
+                      <td
+                        colSpan={Math.max(tableFields.length, 1)}
+                        className="h-28 px-3 text-center text-xs text-muted-foreground"
+                      >
+                        <p className="font-medium text-foreground">Could not load rows.</p>
+                        <p className="mt-1">{rowState.error}</p>
+                      </td>
+                    </tr>
+                  ) : rowState.rows.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={Math.max(tableFields.length, 1)}
+                        className="h-28 px-3 text-center text-xs text-muted-foreground"
+                      >
+                        No rows found for this model.
+                      </td>
+                    </tr>
+                  ) : (
+                    rowState.rows.map((row, rowIndex) => (
+                      <tr
+                        key={rowIndex}
+                        aria-label={`Select row ${rowIndex + 1}`}
+                        aria-selected={selectedRowIndex === rowIndex ? "true" : undefined}
+                        onClick={() => setSelectedRowIndex(rowIndex)}
+                        className={cn(
+                          "h-10 cursor-pointer border-b border-border hover:bg-muted/55",
+                          selectedRowIndex === rowIndex && "bg-accent/60 hover:bg-accent/60",
+                        )}
+                      >
+                        {tableFields.map((field) => {
+                          const value = row[field.name];
+                          const tone = getCellTone(value);
+                          return (
+                            <td
+                              key={field.name}
+                              className="w-44 max-w-44 border-r border-border px-3 py-1.5 last:border-r-0"
+                            >
+                              <span
+                                title={formatValue(value)}
+                                className={cn(
+                                  "block max-h-5 truncate font-mono text-[11px] leading-5",
+                                  tone === "null" && "text-muted-foreground italic",
+                                  tone === "number" && "text-primary",
+                                  tone === "boolean" && "text-accent-foreground",
+                                  tone === "date" && "text-muted-foreground",
+                                  tone === "json" && "text-foreground",
+                                )}
+                              >
+                                {formatValue(value)}
+                              </span>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            ) : (
+              <div className="flex h-full items-center justify-center px-3 text-center text-xs text-muted-foreground">
+                Select a model after metadata loads.
+              </div>
+            )}
           </div>
         </section>
 
@@ -329,7 +427,7 @@ export function App() {
 
                 {previewMode === "fields" ? (
                   <dl className="max-h-[34rem] overflow-auto rounded-md border border-border bg-background">
-                    {selectedModel.fields.map((field) => (
+                    {tableFields.map((field) => (
                       <div
                         key={field.name}
                         className="grid grid-cols-[120px_minmax(0,1fr)] border-b border-border last:border-b-0"
@@ -339,11 +437,12 @@ export function App() {
                             {field.name}
                           </span>
                           <span className="block truncate font-mono text-[10px] text-muted-foreground">
-                            {field.type}
+                            {formatFieldType(field)}
                           </span>
                         </dt>
                         <dd className="min-w-0 px-2 py-2 font-mono text-[11px] leading-5">
                           <span
+                            title={formatValue(selectedRow[field.name])}
                             className={cn(
                               "block break-words",
                               selectedRow[field.name] === null &&

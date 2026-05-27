@@ -13,6 +13,7 @@ export type StartupContext = {
   appRoot: string;
   databaseUrl: string;
   loadedEnvFiles: string[];
+  prismaPackagePath: string;
   prismaClientPath: string;
 };
 
@@ -42,8 +43,19 @@ export function prepareStartup(options: StartupOptions = {}): StartupContext {
     appRoot,
     databaseUrl,
     loadedEnvFiles: loadedFiles,
+    prismaPackagePath: resolvePrismaPackage(appRoot),
     prismaClientPath: resolvePrismaClient(appRoot),
   };
+}
+
+function resolvePrismaPackage(appRoot: string) {
+  try {
+    return createRequire(path.join(appRoot, "package.json")).resolve("prisma/package.json");
+  } catch {
+    throw new StartupError(
+      `Prisma is not installed in ${appRoot}. Install prisma in the target app before starting Prisma Viewer.`,
+    );
+  }
 }
 
 function resolvePrismaClient(appRoot: string) {
