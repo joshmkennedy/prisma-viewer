@@ -6,6 +6,7 @@ import {
   type ColumnFiltersState,
   type PaginationState,
   type SortingState,
+  type Updater,
 } from "@tanstack/react-table";
 import {
   keepPreviousData,
@@ -103,6 +104,26 @@ type TableRefinements = {
   filters: TableFilter[];
 };
 
+type UrlTableFilter = Omit<TableFilter, "id">;
+
+type ModelRouteSearch = {
+  page: number;
+  pageSize: number;
+  search: string;
+  filters: TableFilter[];
+  sort: SortingState;
+  row: number | null;
+};
+
+type ModelRouteSearchInput = {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  filters?: UrlTableFilter[];
+  sort?: string;
+  row?: number;
+};
+
 type TableRow = {
   row: Record<string, unknown>;
   rowIndex: number;
@@ -112,6 +133,15 @@ const ROW_REFINEMENT_DEBOUNCE_MS = 300;
 const DEFAULT_TABLE_PAGE_SIZE = 100;
 const TABLE_PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
 const ROWS_QUERY_KEY = "modelRows";
+
+const DEFAULT_MODEL_ROUTE_SEARCH: ModelRouteSearch = {
+  page: 1,
+  pageSize: DEFAULT_TABLE_PAGE_SIZE,
+  search: "",
+  filters: [],
+  sort: [],
+  row: null,
+};
 
 function createQueryClient() {
   return new QueryClient({
@@ -144,6 +174,120 @@ function createTableFilter(
     operator,
     value,
   };
+}
+
+function parsePositiveInteger(value: unknown, fallback: number) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) return fallback;
+  return parsed;
+}
+
+function parseRowIndex(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) return null;
+  return parsed;
+}
+
+function isFilterOperator(value: unknown): value is FilterOperator {
+  return (
+    typeof value === "string" &&
+    filterOperators.some((operator) => operator.value === value)
+  );
+}
+
+function parseUrlFilters(value: unknown): TableFilter[] {
+  const parsedValue =
+    typeof value === "string"
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return [];
+          }
+        })()
+      : value;
+
+  if (!Array.isArray(parsedValue)) return [];
+
+  return parsedValue
+    .map((filter, index) => {
+      if (!filter || typeof filter !== "object") return null;
+      const item = filter as Record<string, unknown>;
+      if (typeof item.field !== "string" || !isFilterOperator(item.operator)) {
+        return null;
+      }
+
+      return {
+        id: `url-${index}-${item.field}-${item.operator}`,
+        field: item.field,
+        operator: item.operator,
+        value: typeof item.value === "string" ? item.value : "",
+      };
+    })
+    .filter((filter): filter is TableFilter => filter !== null);
+}
+
+function parseUrlSorting(value: unknown): SortingState {
+  if (typeof value !== "string" || value.trim().length === 0) return [];
+
+  return value
+    .split(",")
+    .map((item) => {
+      const [field, direction] = item.split(":");
+      if (!field || (direction !== "asc" && direction !== "desc")) return null;
+      return { id: field, desc: direction === "desc" };
+    })
+    .filter((sort): sort is SortingState[number] => sort !== null);
+}
+
+function encodeUrlSorting(sorting: SortingState) {
+  if (sorting.length === 0) return undefined;
+  return sorting.map(({ id, desc }) => `${id}:${desc ? "desc" : "asc"}`).join(",");
+}
+
+function toUrlFilters(filters: TableFilter[]): UrlTableFilter[] | undefined {
+  if (filters.length === 0) return undefined;
+  return filters.map(({ field, operator, value }) => ({ field, operator, value }));
+}
+
+function toModelRouteSearchInput(search: ModelRouteSearch): ModelRouteSearchInput {
+  return {
+    page: search.page === DEFAULT_MODEL_ROUTE_SEARCH.page ? undefined : search.page,
+    pageSize:
+      search.pageSize === DEFAULT_MODEL_ROUTE_SEARCH.pageSize ? undefined : search.pageSize,
+    search: search.search.trim() ? search.search : undefined,
+    filters: toUrlFilters(search.filters),
+    sort: encodeUrlSorting(search.sort),
+    row: search.row ?? undefined,
+  };
+}
+
+function normalizeModelRouteSearch(rawSearch: Record<string, unknown>): ModelRouteSearch {
+  const page = parsePositiveInteger(rawSearch.page, DEFAULT_MODEL_ROUTE_SEARCH.page);
+  const requestedPageSize = parsePositiveInteger(
+    rawSearch.pageSize,
+    DEFAULT_MODEL_ROUTE_SEARCH.pageSize,
+  );
+  const pageSize = TABLE_PAGE_SIZE_OPTIONS.includes(
+    requestedPageSize as (typeof TABLE_PAGE_SIZE_OPTIONS)[number],
+  )
+    ? requestedPageSize
+    : DEFAULT_MODEL_ROUTE_SEARCH.pageSize;
+
+  return {
+    page,
+    pageSize,
+    search: typeof rawSearch.search === "string" ? rawSearch.search : "",
+    filters: parseUrlFilters(rawSearch.filters),
+    sort: parseUrlSorting(rawSearch.sort),
+    row: parseRowIndex(rawSearch.row),
+  };
+}
+
+function validateModelRouteSearch(rawSearch: Record<string, unknown>): ModelRouteSearchInput {
+  return toModelRouteSearchInput(normalizeModelRouteSearch(rawSearch));
 }
 
 function useDebouncedValue<T>(value: T, delayMs: number) {
@@ -386,20 +530,22 @@ const indexRoute = createRoute({
 const modelRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/model/$modelName",
+  validateSearch: validateModelRouteSearch,
   component: ModelRoute,
 });
 
 const routeTree = rootRoute.addChildren([indexRoute, modelRoute]);
-const router = createRouter({ routeTree });
+const typedRouter = createRouter({ routeTree });
 
 declare module "@tanstack/react-router" {
   interface Register {
-    router: typeof router;
+    router: typeof typedRouter;
   }
 }
 
 export function App() {
   const [queryClient] = useState(createQueryClient);
+  const [router] = useState(() => createRouter({ routeTree }));
 
   return (
     <QueryClientProvider client={queryClient}>
@@ -410,25 +556,28 @@ export function App() {
 
 function ModelRoute() {
   const { modelName } = modelRoute.useParams();
-  return <AppContent routedModelName={modelName} />;
+  const routeSearch = modelRoute.useSearch();
+  return <AppContent routedModelName={modelName} rawRouteSearch={routeSearch} />;
 }
 
-function AppContent({ routedModelName }: { routedModelName: string | null }) {
+function AppContent({
+  routedModelName,
+  rawRouteSearch = {},
+}: {
+  routedModelName: string | null;
+  rawRouteSearch?: ModelRouteSearchInput;
+}) {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
-  const [tableSearch, setTableSearch] = useState("");
-  const [tableFilters, setTableFilters] = useState<TableFilter[]>([]);
   const [loadedTableRefinements, setLoadedTableRefinements] = useState<TableRefinements>({
     search: "",
     filters: [],
   });
-  const [pagination, setPagination] = useState<PaginationState>({
-    pageIndex: 0,
-    pageSize: DEFAULT_TABLE_PAGE_SIZE,
-  });
-  const [sorting, setSorting] = useState<SortingState>([]);
-  const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
   const [previewMode, setPreviewMode] = useState<PreviewMode>("fields");
+  const routeSearch = useMemo(
+    () => normalizeModelRouteSearch(rawRouteSearch),
+    [rawRouteSearch],
+  );
 
   const modelQuery = useQuery({
     queryKey: ["models"],
@@ -473,14 +622,16 @@ function AppContent({ routedModelName }: { routedModelName: string | null }) {
     () => tableFields.filter((field) => isFilterableField(field)),
     [tableFields],
   );
-  const activeTableFilters = useMemo(
+  const tableSearch = routeSearch.search;
+  const tableFilters = useMemo(
     () =>
-      tableFilters.filter((filter) => {
+      routeSearch.filters.filter((filter) => {
         const field = filterableFields.find((candidate) => candidate.name === filter.field);
         if (!field) return false;
         const operator = operatorsForField(field).find(
           (item) => item.value === filter.operator,
         );
+        if (!operator) return false;
         if (
           field.kind === "enum" &&
           operator?.needsValue !== false &&
@@ -489,10 +640,36 @@ function AppContent({ routedModelName }: { routedModelName: string | null }) {
         ) {
           return false;
         }
+        return true;
+      }),
+    [filterableFields, routeSearch.filters],
+  );
+  const activeTableFilters = useMemo(
+    () =>
+      tableFilters.filter((filter) => {
+        const field = filterableFields.find((candidate) => candidate.name === filter.field);
+        const operator = operatorsForField(field).find(
+          (item) => item.value === filter.operator,
+        );
         return operator?.needsValue === false || filter.value.trim().length > 0;
       }),
     [filterableFields, tableFilters],
   );
+  const sorting = useMemo(
+    () =>
+      routeSearch.sort.filter((sort) =>
+        tableFields.some((field) => field.name === sort.id),
+      ),
+    [routeSearch.sort, tableFields],
+  );
+  const pagination = useMemo<PaginationState>(
+    () => ({
+      pageIndex: routeSearch.page - 1,
+      pageSize: routeSearch.pageSize,
+    }),
+    [routeSearch.page, routeSearch.pageSize],
+  );
+  const selectedRowIndex = routeSearch.row;
   const columnFilters = useMemo<ColumnFiltersState>(
     () =>
       activeTableFilters.map(({ field, operator, value }) => ({
@@ -659,13 +836,8 @@ function AppContent({ routedModelName }: { routedModelName: string | null }) {
       pagination,
       sorting,
     },
-    onPaginationChange: setPagination,
-    onSortingChange: (updater) => {
-      resetTablePage();
-      setSorting((current) =>
-        typeof updater === "function" ? updater(current) : updater,
-      );
-    },
+    onPaginationChange: handlePaginationChange,
+    onSortingChange: handleSortingChange,
     getCoreRowModel: getCoreRowModel(),
     manualFiltering: true,
     manualPagination: true,
@@ -682,34 +854,80 @@ function AppContent({ routedModelName }: { routedModelName: string | null }) {
     selectedRowIndex === null ? null : (rowState.rows[selectedRowIndex] ?? null);
 
   useEffect(() => {
-    setTableSearch((current) => (current ? "" : current));
-    setTableFilters((current) => (current.length > 0 ? [] : current));
-    setLoadedTableRefinements({ search: "", filters: [] });
-    setPagination((current) =>
-      current.pageIndex === 0 ? current : { ...current, pageIndex: 0 },
-    );
-    setSorting([]);
-    setSelectedRowIndex(null);
-  }, [selectedModel?.name]);
-
-  useEffect(() => {
-    setSelectedRowIndex(null);
-  }, [pagination.pageIndex, pagination.pageSize]);
-
-  useEffect(() => {
     if (
       selectedRowIndex !== null &&
       hasTableRefinements &&
       !filteredRows.some((item) => item.rowIndex === selectedRowIndex)
     ) {
-      setSelectedRowIndex(null);
+      updateModelSearch({ row: null });
     }
   }, [filteredRows, hasTableRefinements, selectedRowIndex]);
 
-  function resetTablePage() {
-    setPagination((current) =>
-      current.pageIndex === 0 ? current : { ...current, pageIndex: 0 },
-    );
+  useEffect(() => {
+    if (!selectedModel) return;
+    const nextSearch: ModelRouteSearch = {
+      ...routeSearch,
+      filters: tableFilters,
+      sort: sorting,
+      row:
+        selectedRowIndex !== null &&
+        rowState.status === "success" &&
+        rowState.rows[selectedRowIndex] === undefined
+          ? null
+          : selectedRowIndex,
+    };
+
+    if (
+      nextSearch.filters.length !== routeSearch.filters.length ||
+      nextSearch.sort.length !== routeSearch.sort.length ||
+      nextSearch.row !== routeSearch.row
+    ) {
+      void navigate({
+        to: "/model/$modelName",
+        params: { modelName: routedModelName ?? "" },
+        search: toModelRouteSearchInput(nextSearch),
+        replace: true,
+      });
+    }
+  }, [
+    navigate,
+    routedModelName,
+    routeSearch,
+    selectedModel,
+    rowState.rows,
+    rowState.status,
+    selectedRowIndex,
+    sorting,
+    tableFilters,
+  ]);
+
+  function updateModelSearch(
+    updates: Partial<ModelRouteSearch>,
+    options: { replace?: boolean } = {},
+  ) {
+    if (!routedModelName) return;
+    const nextSearch = { ...routeSearch, ...updates };
+    void navigate({
+      to: "/model/$modelName",
+      params: { modelName: routedModelName },
+      search: toModelRouteSearchInput(nextSearch),
+      replace: options.replace ?? true,
+    });
+  }
+
+  function handlePaginationChange(updater: Updater<PaginationState>) {
+    const nextPagination =
+      typeof updater === "function" ? updater(pagination) : updater;
+    updateModelSearch({
+      page: nextPagination.pageIndex + 1,
+      pageSize: nextPagination.pageSize,
+      row: null,
+    });
+  }
+
+  function handleSortingChange(updater: Updater<SortingState>) {
+    const nextSorting = typeof updater === "function" ? updater(sorting) : updater;
+    updateModelSearch({ page: 1, sort: nextSorting, row: null });
   }
 
   function selectModel(modelName: string) {
@@ -724,22 +942,22 @@ function AppContent({ routedModelName }: { routedModelName: string | null }) {
   function addTableFilter() {
     const defaultField = filterableFields[0];
     if (!defaultField) return;
-    resetTablePage();
     const operator = operatorsForField(defaultField)[0]?.value ?? "equals";
     const value =
       defaultField.kind === "enum" && operator === "equals"
         ? enumValuesForField(defaultField)[0] ?? ""
         : "";
-    setTableFilters((current) => [
-      ...current,
-      createTableFilter(defaultField.name, operator, value),
-    ]);
+    updateModelSearch({
+      page: 1,
+      filters: [...tableFilters, createTableFilter(defaultField.name, operator, value)],
+      row: null,
+    });
   }
 
   function updateTableFilter(id: string, updates: Partial<TableFilter>) {
-    resetTablePage();
-    setTableFilters((current) =>
-      current.map((filter) =>
+    updateModelSearch({
+      page: 1,
+      filters: tableFilters.map((filter) =>
         filter.id === id
           ? {
               ...filter,
@@ -747,21 +965,25 @@ function AppContent({ routedModelName }: { routedModelName: string | null }) {
             }
           : filter,
       ),
-    );
+      row: null,
+    });
   }
 
   function removeTableFilter(id: string) {
-    resetTablePage();
-    setTableFilters((current) => current.filter((filter) => filter.id !== id));
+    updateModelSearch({
+      page: 1,
+      filters: tableFilters.filter((filter) => filter.id !== id),
+      row: null,
+    });
   }
 
   function updateTableFilterField(id: string, fieldName: string) {
-    resetTablePage();
     const field = filterableFields.find((candidate) => candidate.name === fieldName);
     const supportedOperators = operatorsForField(field);
     const enumValues = enumValuesForField(field);
-    setTableFilters((current) =>
-      current.map((filter) => {
+    updateModelSearch({
+      page: 1,
+      filters: tableFilters.map((filter) => {
         if (filter.id !== id) return filter;
         const operator = supportedOperators.some((item) => item.value === filter.operator)
           ? filter.operator
@@ -778,13 +1000,12 @@ function AppContent({ routedModelName }: { routedModelName: string | null }) {
           value,
         };
       }),
-    );
+      row: null,
+    });
   }
 
   function clearTableRefinements() {
-    resetTablePage();
-    setTableSearch("");
-    setTableFilters([]);
+    updateModelSearch({ page: 1, search: "", filters: [], row: null });
   }
 
   function updatePreviewMode(value: string) {
@@ -922,8 +1143,11 @@ function AppContent({ routedModelName }: { routedModelName: string | null }) {
                   <input
                     value={tableSearch}
                     onChange={(event) => {
-                      resetTablePage();
-                      setTableSearch(event.target.value);
+                      updateModelSearch({
+                        page: 1,
+                        search: event.target.value,
+                        row: null,
+                      });
                     }}
                     placeholder="Search rows across visible columns"
                     disabled={!selectedModel}
@@ -1207,7 +1431,9 @@ function AppContent({ routedModelName }: { routedModelName: string | null }) {
                         aria-selected={
                           selectedRowIndex === tableRow.original.rowIndex ? "true" : undefined
                         }
-                        onClick={() => setSelectedRowIndex(tableRow.original.rowIndex)}
+                        onClick={() =>
+                          updateModelSearch({ row: tableRow.original.rowIndex })
+                        }
                         className={cn(
                           "h-10 cursor-pointer border-b border-border transition-colors hover:bg-elevated",
                           selectedRowIndex === tableRow.original.rowIndex &&
@@ -1250,8 +1476,11 @@ function AppContent({ routedModelName }: { routedModelName: string | null }) {
                   <select
                     value={pagination.pageSize}
                     onChange={(event) => {
-                      table.setPageSize(Number(event.target.value));
-                      table.setPageIndex(0);
+                      updateModelSearch({
+                        page: 1,
+                        pageSize: Number(event.target.value),
+                        row: null,
+                      });
                     }}
                     disabled={!selectedModel}
                     aria-label="Rows per page"

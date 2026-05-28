@@ -62,7 +62,7 @@ describe("App model sidebar", () => {
     renderApp("/");
 
     expect(await screen.findByRole("heading", { name: "Models" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "User" })).toBeTruthy();
+    expect(await screen.findByRole("link", { name: "User" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "AuditLog" })).toBeTruthy();
     expect(screen.queryByText("No rows found for this model.")).toBeNull();
   });
@@ -95,7 +95,7 @@ describe("App model sidebar", () => {
   it("renders loading, empty, and error states clearly", async () => {
     mockPendingModelsResponse();
     const { unmount } = renderApp();
-    expect(screen.getAllByText("Loading models...").length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Loading models...")).length).toBeGreaterThan(0);
     unmount();
 
     mockApiResponses({ models: [], rowsByModel: {} });
@@ -363,6 +363,158 @@ describe("App row table", () => {
     });
   });
 
+  it("restores pagination from the model URL", async () => {
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {
+        User: [{ id: "user_26", email: "page-two@example.com" }],
+      },
+    });
+
+    renderApp("/model/User?page=2&pageSize=25");
+
+    expect(await screen.findByText("page-two@example.com")).toBeTruthy();
+    expect(screen.getByText("Page 2")).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/models/User/rows?page=2&pageSize=25",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("writes table interactions to the model URL", async () => {
+    const pageOneRows = Array.from({ length: 100 }, (_, index) => ({
+      id: `user_${index + 1}`,
+      email: `user${index + 1}@example.com`,
+    }));
+    mockApiResponses({
+      models: [model("User", ["id", "email", "role"])],
+      rowsByModel: {
+        User: pageOneRows,
+      },
+    });
+
+    renderApp();
+
+    await screen.findByText("user100@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "Next page" }));
+    await waitFor(() => expect(window.location.search).toContain("page=2"));
+
+    await userEvent.selectOptions(screen.getByLabelText("Rows per page"), "25");
+    await waitFor(() => expect(window.location.search).toContain("pageSize=25"));
+    expect(window.location.search).not.toContain("page=2");
+
+    await userEvent.click(screen.getByRole("button", { name: "Sort by email" }));
+    await waitFor(() =>
+      expect(decodeURIComponent(window.location.search)).toContain("sort=email:asc"),
+    );
+
+    await userEvent.type(screen.getByLabelText("Search table rows"), "grace");
+    await waitFor(() => expect(window.location.search).toContain("search=grace"));
+
+    await userEvent.click(screen.getByRole("button", { name: "Add table filter" }));
+    await userEvent.selectOptions(screen.getByLabelText("Filter field"), "role");
+    await userEvent.selectOptions(screen.getByLabelText("Filter operator"), "equals");
+    await userEvent.type(screen.getByLabelText("Filter value"), "admin");
+    await waitFor(() => expect(window.location.search).toContain("filters="));
+
+    await userEvent.click(screen.getByText("user1@example.com"));
+    await waitFor(() => expect(window.location.search).toContain("row=0"));
+  });
+
+  it("restores search, filters, and sorting from the model URL", async () => {
+    const filters = encodeURIComponent(
+      JSON.stringify([{ field: "role", operator: "equals", value: "admin" }]),
+    );
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email", "role"])],
+      rowsByModel: {
+        User: [{ id: "user_1", email: "grace@example.com", role: "admin" }],
+      },
+    });
+
+    renderApp(`/model/User?search=grace&filters=${filters}&sort=email:asc`);
+
+    expect(await screen.findByText("grace@example.com")).toBeTruthy();
+    expect((screen.getByLabelText("Search table rows") as HTMLInputElement).value).toBe(
+      "grace",
+    );
+    expect((screen.getByLabelText("Filter field") as HTMLSelectElement).value).toBe(
+      "role",
+    );
+    expect((screen.getByLabelText("Filter operator") as HTMLSelectElement).value).toBe(
+      "equals",
+    );
+    expect((screen.getByLabelText("Filter value") as HTMLInputElement).value).toBe(
+      "admin",
+    );
+    expect(window.location.search).toContain("sort=email:asc");
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([input]) => {
+          const url = new URL(String(input), "http://localhost");
+          return (
+            url.searchParams.get("search") === "grace" &&
+            url.searchParams.get("filters")?.includes('"field":"role"') &&
+            url.searchParams.get("sort")?.includes('"field":"email"')
+          );
+        }),
+      ).toBe(true);
+    });
+  });
+
+  it("drops stale filter, sort, and selected row URL values after metadata and rows load", async () => {
+    const filters = encodeURIComponent(
+      JSON.stringify([{ field: "missing", operator: "equals", value: "admin" }]),
+    );
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {
+        User: [{ id: "user_1", email: "ada@example.com" }],
+      },
+    });
+
+    renderApp(`/model/User?filters=${filters}&sort=missing:asc&row=5`);
+
+    expect(await screen.findByText("ada@example.com")).toBeTruthy();
+    expect(screen.queryByLabelText("Filter field")).toBeNull();
+    expect(screen.getByText("Select a table row to inspect the full record.")).toBeTruthy();
+    await waitFor(() => {
+      expect(window.location.search).not.toContain("filters=");
+      expect(window.location.search).not.toContain("sort=");
+      expect(window.location.search).not.toContain("row=");
+    });
+    expect(
+      fetchMock.mock.calls.some(([input]) => {
+        const url = new URL(String(input), "http://localhost");
+        return (
+          url.pathname === "/api/models/User/rows" &&
+          !url.searchParams.has("filters") &&
+          !url.searchParams.has("sort")
+        );
+      }),
+    ).toBe(true);
+  });
+
+  it("restores the selected row from the model URL", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {
+        User: [
+          { id: "user_1", email: "ada@example.com" },
+          { id: "user_2", email: "grace@example.com" },
+        ],
+      },
+    });
+
+    renderApp("/model/User?row=1");
+
+    expect((await screen.findAllByText("grace@example.com")).length).toBeGreaterThan(0);
+    expect(screen.getByRole("row", { name: "Select row 2" }).getAttribute("aria-selected")).toBe(
+      "true",
+    );
+    expect(screen.getAllByText("user_2").length).toBeGreaterThan(1);
+  });
+
   it("selects a table row and renders the record preview", async () => {
     mockApiResponses({
       models: [model("User", ["id", "email"])],
@@ -377,7 +529,7 @@ describe("App row table", () => {
     renderApp();
 
     expect(
-      screen.getByText("Select a table row to inspect the full record."),
+      await screen.findByText("Select a table row to inspect the full record."),
     ).toBeTruthy();
 
     await userEvent.click(await screen.findByText("grace@example.com"));
