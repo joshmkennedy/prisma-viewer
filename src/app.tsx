@@ -3,7 +3,6 @@ import {
   getCoreRowModel,
   useReactTable,
   type ColumnDef,
-  type ColumnFiltersState,
   type PaginationState,
   type SortingState,
   type Updater,
@@ -54,6 +53,25 @@ import { toast } from "sonner";
 import { Button } from "./components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { cn } from "./lib/utils";
+import {
+  DEFAULT_TABLE_PAGE_SIZE,
+  ROW_REFINEMENT_DEBOUNCE_MS,
+  ROWS_QUERY_KEY,
+  TABLE_PAGE_SIZE_OPTIONS,
+  createModelRowsRequestUrl,
+  createModelTableBrowser,
+  enumValuesForField,
+  filterOperators,
+  normalizeModelRouteSearch,
+  operatorsForField,
+  validateModelRouteSearch,
+  type FilterOperator,
+  type ModelRouteSearchInput,
+  type ModelRowsRequest,
+  type TableFilter,
+  type TableRefinements,
+  type TableRow,
+} from "./model-table-browser";
 import { formatQueryLabArgsSource } from "./query-lab-args-format";
 import {
   getQueryLabCompletions,
@@ -106,8 +124,6 @@ type RowLoadState =
   | { status: "success"; rows: Record<string, unknown>[]; error: null }
   | { status: "error"; rows: Record<string, unknown>[]; error: string };
 
-type FilterOperator = "contains" | "equals" | "startsWith" | "endsWith" | "empty" | "notEmpty";
-
 type SavedQueryLabView = {
   id: string;
   name: string;
@@ -119,47 +135,6 @@ type SavedQueryLabView = {
   updatedAt: string;
 };
 
-type TableFilter = {
-  id: string;
-  field: string;
-  operator: FilterOperator;
-  value: string;
-};
-
-type TableRefinements = {
-  search: string;
-  filters: TableFilter[];
-};
-
-type UrlTableFilter = Omit<TableFilter, "id">;
-
-type ModelRouteSearch = {
-  page: number;
-  pageSize: number;
-  search: string;
-  filters: TableFilter[];
-  sort: SortingState;
-  row: number | null;
-};
-
-type ModelRouteSearchInput = {
-  page?: number;
-  pageSize?: number;
-  search?: string;
-  filters?: UrlTableFilter[];
-  sort?: string;
-  row?: number;
-};
-
-type TableRow = {
-  row: Record<string, unknown>;
-  rowIndex: number;
-};
-
-const ROW_REFINEMENT_DEBOUNCE_MS = 300;
-const DEFAULT_TABLE_PAGE_SIZE = 100;
-const TABLE_PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
-const ROWS_QUERY_KEY = "modelRows";
 const QUERY_LAB_DEFAULT_ARGS = "{}";
 const QUERY_LAB_SAVED_VIEWS_STORAGE_KEY = "prisma-viewer.query-lab.saved-views.v1";
 const QUERY_LAB_LANGUAGE_ID = "query-lab-args";
@@ -182,15 +157,6 @@ const THEME_COLORS = {
   warning: "#fa8d2e",
   danger: "#ea5358",
 } as const;
-
-const DEFAULT_MODEL_ROUTE_SEARCH: ModelRouteSearch = {
-  page: 1,
-  pageSize: DEFAULT_TABLE_PAGE_SIZE,
-  search: "",
-  filters: [],
-  sort: [],
-  row: null,
-};
 
 function monacoCompletionKind(monaco: Monaco, kind: QueryLabCompletionKind) {
   if (kind === "arg") return monaco.languages.CompletionItemKind.Property;
@@ -312,142 +278,6 @@ function createQueryClient() {
   });
 }
 
-const filterOperators: { value: FilterOperator; label: string; needsValue: boolean }[] = [
-  { value: "contains", label: "contains", needsValue: true },
-  { value: "equals", label: "equals", needsValue: true },
-  { value: "startsWith", label: "starts with", needsValue: true },
-  { value: "endsWith", label: "ends with", needsValue: true },
-  { value: "empty", label: "is empty", needsValue: false },
-  { value: "notEmpty", label: "is not empty", needsValue: false },
-];
-
-function createTableFilter(
-  field = "",
-  operator: FilterOperator = "contains",
-  value = "",
-): TableFilter {
-  return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    field,
-    operator,
-    value,
-  };
-}
-
-function parsePositiveInteger(value: unknown, fallback: number) {
-  if (value === null || value === undefined || value === "") return fallback;
-  const parsed = typeof value === "number" ? value : Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1) return fallback;
-  return parsed;
-}
-
-function parseRowIndex(value: unknown) {
-  if (value === null || value === undefined || value === "") return null;
-  const parsed = typeof value === "number" ? value : Number(value);
-  if (!Number.isInteger(parsed) || parsed < 0) return null;
-  return parsed;
-}
-
-function isFilterOperator(value: unknown): value is FilterOperator {
-  return (
-    typeof value === "string" &&
-    filterOperators.some((operator) => operator.value === value)
-  );
-}
-
-function parseUrlFilters(value: unknown): TableFilter[] {
-  const parsedValue =
-    typeof value === "string"
-      ? (() => {
-          try {
-            return JSON.parse(value) as unknown;
-          } catch {
-            return [];
-          }
-        })()
-      : value;
-
-  if (!Array.isArray(parsedValue)) return [];
-
-  return parsedValue
-    .map((filter, index) => {
-      if (!filter || typeof filter !== "object") return null;
-      const item = filter as Record<string, unknown>;
-      if (typeof item.field !== "string" || !isFilterOperator(item.operator)) {
-        return null;
-      }
-
-      return {
-        id: `url-${index}-${item.field}-${item.operator}`,
-        field: item.field,
-        operator: item.operator,
-        value: typeof item.value === "string" ? item.value : "",
-      };
-    })
-    .filter((filter): filter is TableFilter => filter !== null);
-}
-
-function parseUrlSorting(value: unknown): SortingState {
-  if (typeof value !== "string" || value.trim().length === 0) return [];
-
-  return value
-    .split(",")
-    .map((item) => {
-      const [field, direction] = item.split(":");
-      if (!field || (direction !== "asc" && direction !== "desc")) return null;
-      return { id: field, desc: direction === "desc" };
-    })
-    .filter((sort): sort is SortingState[number] => sort !== null);
-}
-
-function encodeUrlSorting(sorting: SortingState) {
-  if (sorting.length === 0) return undefined;
-  return sorting.map(({ id, desc }) => `${id}:${desc ? "desc" : "asc"}`).join(",");
-}
-
-function toUrlFilters(filters: TableFilter[]): UrlTableFilter[] | undefined {
-  if (filters.length === 0) return undefined;
-  return filters.map(({ field, operator, value }) => ({ field, operator, value }));
-}
-
-function toModelRouteSearchInput(search: ModelRouteSearch): ModelRouteSearchInput {
-  return {
-    page: search.page === DEFAULT_MODEL_ROUTE_SEARCH.page ? undefined : search.page,
-    pageSize:
-      search.pageSize === DEFAULT_MODEL_ROUTE_SEARCH.pageSize ? undefined : search.pageSize,
-    search: search.search.trim() ? search.search : undefined,
-    filters: toUrlFilters(search.filters),
-    sort: encodeUrlSorting(search.sort),
-    row: search.row ?? undefined,
-  };
-}
-
-function normalizeModelRouteSearch(rawSearch: Record<string, unknown>): ModelRouteSearch {
-  const page = parsePositiveInteger(rawSearch.page, DEFAULT_MODEL_ROUTE_SEARCH.page);
-  const requestedPageSize = parsePositiveInteger(
-    rawSearch.pageSize,
-    DEFAULT_MODEL_ROUTE_SEARCH.pageSize,
-  );
-  const pageSize = TABLE_PAGE_SIZE_OPTIONS.includes(
-    requestedPageSize as (typeof TABLE_PAGE_SIZE_OPTIONS)[number],
-  )
-    ? requestedPageSize
-    : DEFAULT_MODEL_ROUTE_SEARCH.pageSize;
-
-  return {
-    page,
-    pageSize,
-    search: typeof rawSearch.search === "string" ? rawSearch.search : "",
-    filters: parseUrlFilters(rawSearch.filters),
-    sort: parseUrlSorting(rawSearch.sort),
-    row: parseRowIndex(rawSearch.row),
-  };
-}
-
-function validateModelRouteSearch(rawSearch: Record<string, unknown>): ModelRouteSearchInput {
-  return toModelRouteSearchInput(normalizeModelRouteSearch(rawSearch));
-}
-
 function useDebouncedValue<T>(value: T, delayMs: number) {
   const [debouncedValue, setDebouncedValue] = useState(value);
 
@@ -462,31 +292,20 @@ function useDebouncedValue<T>(value: T, delayMs: number) {
   return debouncedValue;
 }
 
-function isFilterableField(field: Field) {
+function tableRefinementsEqual(left: TableRefinements, right: TableRefinements) {
   return (
-    field.kind === "enum" ||
-    (field.kind === "scalar" &&
-      ["String", "Boolean", "Int", "BigInt", "Float", "Decimal", "DateTime"].includes(
-        field.type,
-      ))
+    left.search === right.search &&
+    left.filters.length === right.filters.length &&
+    left.filters.every((filter, index) => {
+      const other = right.filters[index];
+      return (
+        other &&
+        filter.field === other.field &&
+        filter.operator === other.operator &&
+        filter.value === other.value
+      );
+    })
   );
-}
-
-function operatorsForField(field: Field | undefined) {
-  if (!field) return [];
-  if (field.type === "String") return filterOperators;
-  if (field.kind === "enum") {
-    return filterOperators.filter((operator) =>
-      ["equals", "empty", "notEmpty"].includes(operator.value),
-    );
-  }
-  return filterOperators.filter((operator) =>
-    ["equals", "empty", "notEmpty"].includes(operator.value),
-  );
-}
-
-function enumValuesForField(field: Field | undefined) {
-  return field?.kind === "enum" ? (field.enumValues ?? []) : [];
 }
 
 function isQueryLabOperation(value: unknown): value is QueryLabOperation {
@@ -567,67 +386,6 @@ function createSavedQueryLabViewId() {
   return `view-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function formatRowSummary(
-  rowState: RowLoadState,
-  columnCount: number,
-  visibleRowCount: number,
-  hasTableRefinements: boolean,
-) {
-  const columnLabel = columnCount === 1 ? "column" : "columns";
-
-  if (rowState.status === "loading") {
-    return `Loading rows, ${columnCount} ${columnLabel} shown`;
-  }
-
-  if (rowState.status === "error") {
-    return `Rows unavailable, ${columnCount} ${columnLabel} shown`;
-  }
-
-  const rowLabel = rowState.rows.length === 1 ? "row" : "rows";
-  if (hasTableRefinements) {
-    const matchLabel = visibleRowCount === 1 ? "match" : "matches";
-    return `${visibleRowCount} ${matchLabel} loaded, ${columnCount} ${columnLabel} shown`;
-  }
-
-  return `${rowState.rows.length} ${rowLabel} loaded, ${columnCount} ${columnLabel} shown`;
-}
-
-function normalizeSearchValue(value: unknown) {
-  return formatValue(value).toLowerCase();
-}
-
-function isEmptyValue(value: unknown) {
-  if (Array.isArray(value)) return value.length === 0;
-  return value === null || value === undefined || value === "";
-}
-
-function rowMatchesFilter(row: Record<string, unknown>, filter: TableFilter) {
-  const rawValue = row[filter.field];
-  if (filter.operator === "empty") return isEmptyValue(rawValue);
-  if (filter.operator === "notEmpty") return !isEmptyValue(rawValue);
-
-  const query = filter.value.trim().toLowerCase();
-  if (!query) return true;
-
-  if (Array.isArray(rawValue)) {
-    const values = rawValue.map((item) => normalizeSearchValue(item));
-    if (filter.operator === "equals") return values.includes(query);
-    if (filter.operator === "startsWith") {
-      return values.some((value) => value.startsWith(query));
-    }
-    if (filter.operator === "endsWith") {
-      return values.some((value) => value.endsWith(query));
-    }
-    return values.some((value) => value.includes(query));
-  }
-
-  const value = normalizeSearchValue(rawValue);
-  if (filter.operator === "equals") return value === query;
-  if (filter.operator === "startsWith") return value.startsWith(query);
-  if (filter.operator === "endsWith") return value.endsWith(query);
-  return value.includes(query);
-}
-
 async function fetchModelMetadata(signal: AbortSignal): Promise<Model[]> {
   const response = await fetch("/api/models", { signal });
 
@@ -640,48 +398,10 @@ async function fetchModelMetadata(signal: AbortSignal): Promise<Model[]> {
 }
 
 async function fetchModelRows(
-  modelName: string,
+  request: ModelRowsRequest,
   signal: AbortSignal,
-  page: number,
-  pageSize: number,
-  search = "",
-  filters: TableFilter[] = [],
-  sorting: SortingState = [],
 ): Promise<RowsResponse> {
-  const searchParams = new URLSearchParams({
-    page: String(page),
-    pageSize: String(pageSize),
-  });
-  const trimmedSearch = search.trim();
-  if (trimmedSearch) searchParams.set("search", trimmedSearch);
-  if (filters.length > 0) {
-    searchParams.set(
-      "filters",
-      JSON.stringify(
-        filters.map(({ field, operator, value }) => ({
-          field,
-          operator,
-          value,
-        })),
-      ),
-    );
-  }
-  if (sorting.length > 0) {
-    searchParams.set(
-      "sort",
-      JSON.stringify(
-        sorting.map(({ id, desc }) => ({
-          field: id,
-          direction: desc ? "desc" : "asc",
-        })),
-      ),
-    );
-  }
-
-  const response = await fetch(
-    `/api/models/${encodeURIComponent(modelName)}/rows?${searchParams.toString()}`,
-    { signal },
-  );
+  const response = await fetch(createModelRowsRequestUrl(request), { signal });
 
   if (!response.ok) {
     throw new Error(await formatApiError(response, "Rows API"));
@@ -1839,6 +1559,9 @@ function AppContent({
     filters: [],
   });
   const [previewMode, setPreviewMode] = useState<PreviewMode>("fields");
+  const [optimisticSelectedRowIndex, setOptimisticSelectedRowIndex] = useState<number | null>(
+    null,
+  );
   const routeSearch = useMemo(
     () => normalizeModelRouteSearch(rawRouteSearch),
     [rawRouteSearch],
@@ -1871,115 +1594,52 @@ function AppContent({
     [models, search],
   );
 
-  const selectedModel =
-    routedModelName === null
-      ? null
-      : (models.find((model) => model.name === routedModelName) ?? null);
   const isModelRoute = routedModelName !== null;
-  const tableFields = useMemo(
+  const requestBrowser = useMemo(
     () =>
-      selectedModel?.fields.filter(
-        (field) => field.kind === "scalar" || field.kind === "enum",
-      ) ?? [],
-    [selectedModel],
-  );
-  const filterableFields = useMemo(
-    () => tableFields.filter((field) => isFilterableField(field)),
-    [tableFields],
-  );
-  const tableSearch = routeSearch.search;
-  const tableFilters = useMemo(
-    () =>
-      routeSearch.filters.filter((filter) => {
-        const field = filterableFields.find((candidate) => candidate.name === filter.field);
-        if (!field) return false;
-        const operator = operatorsForField(field).find(
-          (item) => item.value === filter.operator,
-        );
-        if (!operator) return false;
-        if (
-          field.kind === "enum" &&
-          operator?.needsValue !== false &&
-          field.enumValues?.length &&
-          !field.enumValues.includes(filter.value)
-        ) {
-          return false;
-        }
-        return true;
+      createModelTableBrowser({
+        modelName: routedModelName,
+        rawSearch: rawRouteSearch,
+        models,
+        rows: [],
+        rowStatus: "idle",
       }),
-    [filterableFields, routeSearch.filters],
+    [models, rawRouteSearch, routedModelName],
   );
-  const activeTableFilters = useMemo(
-    () =>
-      tableFilters.filter((filter) => {
-        const field = filterableFields.find((candidate) => candidate.name === filter.field);
-        const operator = operatorsForField(field).find(
-          (item) => item.value === filter.operator,
-        );
-        return operator?.needsValue === false || filter.value.trim().length > 0;
-      }),
-    [filterableFields, tableFilters],
-  );
-  const sorting = useMemo(
-    () =>
-      routeSearch.sort.filter((sort) =>
-        tableFields.some((field) => field.name === sort.id),
-      ),
-    [routeSearch.sort, tableFields],
-  );
-  const pagination = useMemo<PaginationState>(
-    () => ({
-      pageIndex: routeSearch.page - 1,
-      pageSize: routeSearch.pageSize,
-    }),
-    [routeSearch.page, routeSearch.pageSize],
-  );
-  const selectedRowIndex = routeSearch.row;
-  const columnFilters = useMemo<ColumnFiltersState>(
-    () =>
-      activeTableFilters.map(({ field, operator, value }) => ({
-        id: field,
-        value: { operator, value },
-      })),
-    [activeTableFilters],
-  );
-  const pendingTableRefinements = useMemo<TableRefinements>(
-    () => ({
-      search: tableSearch,
-      filters: activeTableFilters,
-    }),
-    [activeTableFilters, tableSearch],
-  );
+  const selectedModel = requestBrowser.selectedModel;
+  const pendingTableRefinements = requestBrowser.pendingRefinements;
   const debouncedTableRefinements = useDebouncedValue(
     pendingTableRefinements,
     ROW_REFINEMENT_DEBOUNCE_MS,
+  );
+  const rowRequest = useMemo(
+    () =>
+      requestBrowser.request
+        ? {
+            ...requestBrowser.request,
+            search: debouncedTableRefinements.search,
+            filters: debouncedTableRefinements.filters,
+          }
+        : null,
+    [debouncedTableRefinements, requestBrowser.request],
   );
 
   const rowQuery = useQuery({
     queryKey: [
       ROWS_QUERY_KEY,
-      selectedModel?.name,
-      pagination.pageIndex,
-      pagination.pageSize,
-      debouncedTableRefinements.search.trim(),
-      debouncedTableRefinements.filters.map(({ field, operator, value }) => ({
+      rowRequest?.modelName,
+      rowRequest?.page,
+      rowRequest?.pageSize,
+      rowRequest?.search.trim(),
+      rowRequest?.filters.map(({ field, operator, value }) => ({
         field,
         operator,
         value,
       })),
-      sorting.map(({ id, desc }) => ({ id, desc })),
+      rowRequest?.sorting.map(({ id, desc }) => ({ id, desc })),
     ],
-    queryFn: ({ signal }) =>
-      fetchModelRows(
-        selectedModel?.name ?? "",
-        signal,
-        pagination.pageIndex + 1,
-        pagination.pageSize,
-        debouncedTableRefinements.search,
-        debouncedTableRefinements.filters,
-        sorting,
-      ),
-    enabled: Boolean(selectedModel?.name),
+    queryFn: ({ signal }) => fetchModelRows(rowRequest as ModelRowsRequest, signal),
+    enabled: Boolean(rowRequest),
     placeholderData: keepPreviousData,
   });
 
@@ -1994,12 +1654,53 @@ function AppContent({
     : rowQuery.isError
       ? { status: "error", rows: [], error: rowErrorMessage }
       : rowQuery.isFetching
-        ? { status: "loading", rows: rowQuery.data?.rows ?? [], error: null }
-        : { status: "success", rows: rowQuery.data?.rows ?? [], error: null };
+      ? { status: "loading", rows: rowQuery.data?.rows ?? [], error: null }
+      : { status: "success", rows: rowQuery.data?.rows ?? [], error: null };
+
+  const tableBrowser = useMemo(
+    () =>
+      createModelTableBrowser({
+        modelName: routedModelName,
+        rawSearch: rawRouteSearch,
+        models,
+        rows: rowState.rows,
+        rowStatus: rowState.status,
+        loadedRefinements: loadedTableRefinements,
+      }),
+    [
+      loadedTableRefinements,
+      models,
+      rawRouteSearch,
+      routedModelName,
+      rowState.rows,
+      rowState.status,
+    ],
+  );
+  const tableFields = tableBrowser.tableFields;
+  const filterableFields = tableBrowser.filterableFields;
+  const tableSearch = tableBrowser.routeSearch.search;
+  const tableFilters = tableBrowser.tableFilters;
+  const sorting = tableBrowser.sorting;
+  const pagination = tableBrowser.pagination;
+  const columnFilters = tableBrowser.columnFilters;
+  const filteredRows = tableBrowser.visibleRows;
+  const hasTableRefinements = tableBrowser.hasLoadedRefinements;
+  const hasPendingTableRefinements = tableBrowser.hasPendingRefinements;
+  const selectedRowIndex = optimisticSelectedRowIndex ?? tableBrowser.selectedRowIndex;
+  const selectedRow =
+    selectedRowIndex === null ? null : (rowState.rows[selectedRowIndex] ?? null);
+
+  useEffect(() => {
+    setOptimisticSelectedRowIndex(null);
+  }, [routeSearch.row, routeSearch.page, routeSearch.pageSize, routeSearch.search, routedModelName]);
 
   useEffect(() => {
     if (rowQuery.isSuccess && !rowQuery.isPlaceholderData) {
-      setLoadedTableRefinements(debouncedTableRefinements);
+      setLoadedTableRefinements((current) =>
+        tableRefinementsEqual(current, debouncedTableRefinements)
+          ? current
+          : debouncedTableRefinements,
+      );
     }
   }, [
     debouncedTableRefinements,
@@ -2014,28 +1715,6 @@ function AppContent({
       description: rowErrorMessage,
     });
   }, [rowErrorMessage, rowQuery.isError]);
-
-  const hasTableRefinements =
-    loadedTableRefinements.search.trim().length > 0 ||
-    loadedTableRefinements.filters.length > 0;
-  const hasPendingTableRefinements =
-    tableSearch.trim().length > 0 || activeTableFilters.length > 0;
-  const filteredRows = useMemo<TableRow[]>(() => {
-    const query = loadedTableRefinements.search.trim().toLowerCase();
-
-    return rowState.rows
-      .map((row, rowIndex) => ({ row, rowIndex }))
-      .filter(({ row }) => {
-        const matchesSearch =
-          !query ||
-          tableFields.some((field) => normalizeSearchValue(row[field.name]).includes(query));
-
-        return (
-          matchesSearch &&
-          loadedTableRefinements.filters.every((filter) => rowMatchesFilter(row, filter))
-        );
-      });
-  }, [loadedTableRefinements, rowState.rows, tableFields]);
   const tableColumns = useMemo<ColumnDef<TableRow>[]>(
     () =>
       tableFields.map((field) => ({
@@ -2044,10 +1723,16 @@ function AppContent({
         enableSorting: true,
         header: ({ column }) => {
           const sortDirection = column.getIsSorted();
+          const nextSort =
+            sortDirection === "asc"
+              ? [{ id: field.name, desc: true }]
+              : sortDirection === "desc"
+                ? []
+                : [{ id: field.name, desc: false }];
           return (
             <button
               type="button"
-              onClick={column.getToggleSortingHandler()}
+              onClick={() => navigateModelSearch(tableBrowser.commands.changeSorting(nextSort))}
               aria-label={`Sort by ${field.name}`}
               className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 text-left"
             >
@@ -2090,7 +1775,7 @@ function AppContent({
           );
         },
       })),
-    [tableFields],
+    [tableBrowser.commands, tableFields],
   );
   const table = useReactTable({
     data: filteredRows,
@@ -2115,42 +1800,18 @@ function AppContent({
     rowState.status !== "loading" &&
     !rowQuery.isPlaceholderData &&
     rowState.rows.length === pagination.pageSize;
-  const selectedRow =
-    selectedRowIndex === null ? null : (rowState.rows[selectedRowIndex] ?? null);
-
-  useEffect(() => {
-    if (
-      selectedRowIndex !== null &&
-      hasTableRefinements &&
-      !filteredRows.some((item) => item.rowIndex === selectedRowIndex)
-    ) {
-      updateModelSearch({ row: null });
-    }
-  }, [filteredRows, hasTableRefinements, selectedRowIndex]);
 
   useEffect(() => {
     if (!selectedModel) return;
-    const nextSearch: ModelRouteSearch = {
-      ...routeSearch,
-      filters: tableFilters,
-      sort: sorting,
-      row:
-        selectedRowIndex !== null &&
-        rowState.status === "success" &&
-        rowState.rows[selectedRowIndex] === undefined
-          ? null
-          : selectedRowIndex,
-    };
-
     if (
-      nextSearch.filters.length !== routeSearch.filters.length ||
-      nextSearch.sort.length !== routeSearch.sort.length ||
-      nextSearch.row !== routeSearch.row
+      tableBrowser.canonicalRouteSearch.filters.length !== routeSearch.filters.length ||
+      tableBrowser.canonicalRouteSearch.sort.length !== routeSearch.sort.length ||
+      tableBrowser.canonicalRouteSearch.row !== routeSearch.row
     ) {
       void navigate({
         to: "/model/$modelName",
         params: { modelName: routedModelName ?? "" },
-        search: toModelRouteSearchInput(nextSearch),
+        search: tableBrowser.canonicalSearch,
         replace: true,
       });
     }
@@ -2159,23 +1820,19 @@ function AppContent({
     routedModelName,
     routeSearch,
     selectedModel,
-    rowState.rows,
-    rowState.status,
-    selectedRowIndex,
-    sorting,
-    tableFilters,
+    tableBrowser.canonicalRouteSearch,
+    tableBrowser.canonicalSearch,
   ]);
 
-  function updateModelSearch(
-    updates: Partial<ModelRouteSearch>,
+  function navigateModelSearch(
+    search: ModelRouteSearchInput,
     options: { replace?: boolean } = {},
   ) {
     if (!routedModelName) return;
-    const nextSearch = { ...routeSearch, ...updates };
     void navigate({
       to: "/model/$modelName",
       params: { modelName: routedModelName },
-      search: toModelRouteSearchInput(nextSearch),
+      search,
       replace: options.replace ?? true,
     });
   }
@@ -2183,16 +1840,12 @@ function AppContent({
   function handlePaginationChange(updater: Updater<PaginationState>) {
     const nextPagination =
       typeof updater === "function" ? updater(pagination) : updater;
-    updateModelSearch({
-      page: nextPagination.pageIndex + 1,
-      pageSize: nextPagination.pageSize,
-      row: null,
-    });
+    navigateModelSearch(tableBrowser.commands.changePagination(nextPagination));
   }
 
   function handleSortingChange(updater: Updater<SortingState>) {
     const nextSorting = typeof updater === "function" ? updater(sorting) : updater;
-    updateModelSearch({ page: 1, sort: nextSorting, row: null });
+    navigateModelSearch(tableBrowser.commands.changeSorting(nextSorting));
   }
 
   function selectModel(modelName: string) {
@@ -2205,72 +1858,28 @@ function AppContent({
   }
 
   function addTableFilter() {
-    const defaultField = filterableFields[0];
-    if (!defaultField) return;
-    const operator = operatorsForField(defaultField)[0]?.value ?? "equals";
-    const value =
-      defaultField.kind === "enum" && operator === "equals"
-        ? enumValuesForField(defaultField)[0] ?? ""
-        : "";
-    updateModelSearch({
-      page: 1,
-      filters: [...tableFilters, createTableFilter(defaultField.name, operator, value)],
-      row: null,
-    });
+    navigateModelSearch(tableBrowser.commands.addFilter());
   }
 
   function updateTableFilter(id: string, updates: Partial<TableFilter>) {
-    updateModelSearch({
-      page: 1,
-      filters: tableFilters.map((filter) =>
-        filter.id === id
-          ? {
-              ...filter,
-              ...updates,
-            }
-          : filter,
-      ),
-      row: null,
-    });
+    navigateModelSearch(tableBrowser.commands.updateFilter(id, updates));
   }
 
   function removeTableFilter(id: string) {
-    updateModelSearch({
-      page: 1,
-      filters: tableFilters.filter((filter) => filter.id !== id),
-      row: null,
-    });
+    navigateModelSearch(tableBrowser.commands.removeFilter(id));
   }
 
   function updateTableFilterField(id: string, fieldName: string) {
-    const field = filterableFields.find((candidate) => candidate.name === fieldName);
-    const supportedOperators = operatorsForField(field);
-    const enumValues = enumValuesForField(field);
-    updateModelSearch({
-      page: 1,
-      filters: tableFilters.map((filter) => {
-        if (filter.id !== id) return filter;
-        const operator = supportedOperators.some((item) => item.value === filter.operator)
-          ? filter.operator
-          : supportedOperators[0]?.value ?? "equals";
-        const value =
-          field?.kind === "enum" && operator === "equals" && !enumValues.includes(filter.value)
-            ? enumValues[0] ?? ""
-            : filter.value;
-
-        return {
-          ...filter,
-          field: fieldName,
-          operator,
-          value,
-        };
-      }),
-      row: null,
-    });
+    navigateModelSearch(tableBrowser.commands.updateFilterField(id, fieldName));
   }
 
   function clearTableRefinements() {
-    updateModelSearch({ page: 1, search: "", filters: [], row: null });
+    navigateModelSearch(tableBrowser.commands.clearRefinements());
+  }
+
+  function selectTableRow(rowIndex: number) {
+    setOptimisticSelectedRowIndex(rowIndex);
+    navigateModelSearch(tableBrowser.commands.selectRow(rowIndex));
   }
 
   function updatePreviewMode(value: string) {
@@ -2384,12 +1993,7 @@ function AppContent({
                   {!isModelRoute
                     ? `${models.length} ${models.length === 1 ? "model" : "models"} available`
                     : selectedModel
-                    ? formatRowSummary(
-                        rowState,
-                        tableFields.length,
-                        filteredRows.length,
-                        hasTableRefinements,
-                      )
+                    ? tableBrowser.summary
                     : "Load metadata to inspect model fields"}
                 </p>
               </div>
@@ -2427,11 +2031,7 @@ function AppContent({
                   <input
                     value={tableSearch}
                     onChange={(event) => {
-                      updateModelSearch({
-                        page: 1,
-                        search: event.target.value,
-                        row: null,
-                      });
+                      navigateModelSearch(tableBrowser.commands.searchRows(event.target.value));
                     }}
                     placeholder="Search rows across visible columns"
                     disabled={!selectedModel}
@@ -2715,9 +2315,7 @@ function AppContent({
                         aria-selected={
                           selectedRowIndex === tableRow.original.rowIndex ? "true" : undefined
                         }
-                        onClick={() =>
-                          updateModelSearch({ row: tableRow.original.rowIndex })
-                        }
+                        onClick={() => selectTableRow(tableRow.original.rowIndex)}
                         className={cn(
                           "h-10 cursor-pointer border-b border-border transition-colors hover:bg-elevated",
                           selectedRowIndex === tableRow.original.rowIndex &&
@@ -2760,11 +2358,9 @@ function AppContent({
                   <select
                     value={pagination.pageSize}
                     onChange={(event) => {
-                      updateModelSearch({
-                        page: 1,
-                        pageSize: Number(event.target.value),
-                        row: null,
-                      });
+                      navigateModelSearch(
+                        tableBrowser.commands.setPageSize(Number(event.target.value)),
+                      );
                     }}
                     disabled={!selectedModel}
                     aria-label="Rows per page"
