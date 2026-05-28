@@ -54,6 +54,7 @@ import { toast } from "sonner";
 import { Button } from "./components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { cn } from "./lib/utils";
+import { formatQueryLabArgsSource } from "./query-lab-args-format";
 import {
   getQueryLabCompletions,
   getQueryLabEditorDiagnostics,
@@ -1273,6 +1274,16 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
     }
   }
 
+  function formatQueryLabArgs() {
+    const result = formatQueryLabArgsSource(argsSource);
+    if ("error" in result) {
+      toast.error(result.error);
+      return;
+    }
+
+    setArgsSource(result.source);
+  }
+
   const handleQueryLabEditorBeforeMount = useCallback<BeforeMount>((monaco) => {
     queryLabMonacoRef.current = monaco;
     registerQueryLabLanguage(monaco);
@@ -1567,15 +1578,26 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
               <span className="font-mono text-[11px] uppercase text-muted-foreground">
                 Args Mode
               </span>
-              <Button
-                type="button"
-                onClick={() => previewMutation.mutate()}
-                disabled={!canRun}
-                aria-label="Run Query Lab preview"
-              >
-                <Play className="h-3.5 w-3.5" aria-hidden="true" />
-                Run
-              </Button>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={formatQueryLabArgs}
+                  aria-label="Format Query Lab args"
+                >
+                  <Code2 className="h-3.5 w-3.5" aria-hidden="true" />
+                  Format
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => previewMutation.mutate()}
+                  disabled={!canRun}
+                  aria-label="Run Query Lab preview"
+                >
+                  <Play className="h-3.5 w-3.5" aria-hidden="true" />
+                  Run
+                </Button>
+              </div>
             </div>
             <div className="min-h-[220px] flex-1">
               <Editor

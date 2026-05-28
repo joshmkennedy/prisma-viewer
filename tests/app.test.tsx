@@ -501,6 +501,60 @@ describe("App Query Lab", () => {
     expect(screen.getByRole("button", { name: "Copy Prisma Client call" })).toBeTruthy();
   });
 
+  it("formats Query Lab args in the editor", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+    });
+
+    renderApp("/query-lab");
+
+    const editor = await screen.findByLabelText("Args Mode editor");
+    fireEvent.input(editor, {
+      currentTarget: {
+        textContent: '{"where":{"email":{"contains":"example.com"}},"take":25}',
+      },
+      target: {
+        textContent: '{"where":{"email":{"contains":"example.com"}},"take":25}',
+      },
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Format Query Lab args" }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Args Mode editor").textContent).toBe(`{
+  where: {
+    email: {
+      contains: "example.com"
+    }
+  },
+  take: 25
+}`);
+    });
+  });
+
+  it("shows a toast when Query Lab args formatting fails", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+    });
+
+    renderApp("/query-lab");
+
+    const editor = await screen.findByLabelText("Args Mode editor");
+    fireEvent.input(editor, {
+      currentTarget: { textContent: "{ where: makeWhere() }" },
+      target: { textContent: "{ where: makeWhere() }" },
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Format Query Lab args" }));
+
+    expect(toast.error).toHaveBeenCalledWith("Args Mode source contains unsupported syntax.");
+    expect(screen.getByLabelText("Args Mode editor").textContent).toBe(
+      "{ where: makeWhere() }",
+    );
+  });
+
   it("shows Query Lab safety limit API errors clearly", async () => {
     mockApiResponses({
       models: [model("User", ["id"])],
