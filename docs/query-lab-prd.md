@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-Prisma Viewer is currently useful for browsing models, scanning rows, filtering data, and inspecting individual records in a read-only local interface. However, developers often need to answer more specific debugging questions than a table browser can handle:
+Prisma Pad is currently useful for browsing models, scanning rows, filtering data, and inspecting individual records in a read-only local interface. However, developers often need to answer more specific debugging questions than a table browser can handle:
 
 - Which records match a nested Prisma `where` condition?
 - What would this Prisma Client query return before I paste it into app code?
@@ -14,17 +14,17 @@ Prisma Studio and general database clients are strong at browsing and editing da
 
 ## Solution
 
-Add Query Lab: a read-only Prisma query workbench inside Prisma Viewer.
+Add Query Lab: a read-only Prisma query workbench inside Prisma Pad.
 
 Query Lab lets a developer choose a model and operation, write a constrained Prisma args object in a full code editor, run it safely against the target app's generated Prisma Client, inspect the result as a table or JSON, review the normalized Prisma Client call, inspect generated SQL/params/timing when available, and receive performance and safety warnings.
 
 The first version should support Args Mode only. The user selects the model and read operation in the UI, and the editor contains only the operation args object. This avoids executing arbitrary TypeScript while still supporting the core Prisma query workflow. The editor should be a real code editor, preferably Monaco, with syntax highlighting from the first Query Lab slice and Prisma metadata-backed autocomplete added as soon as the basic query path exists.
 
-The feature should reinforce Prisma Viewer's positioning as a safe local Prisma data debugger, not a general database editor or raw SQL client.
+The feature should reinforce Prisma Pad's positioning as a safe local Prisma data debugger, not a general database editor or raw SQL client.
 
 ## User Stories
 
-1. As a developer, I want to open a Query Lab route, so that I can experiment with Prisma queries without leaving Prisma Viewer.
+1. As a developer, I want to open a Query Lab route, so that I can experiment with Prisma queries without leaving Prisma Pad.
 2. As a developer, I want to open Query Lab from a selected model, so that the scratchpad starts in the context I am already inspecting.
 3. As a developer, I want to choose a Prisma model from metadata, so that I can query real models from my app schema.
 4. As a developer, I want to choose a read-only Prisma operation, so that I can safely control the shape of the query.
@@ -195,9 +195,9 @@ The feature should reinforce Prisma Viewer's positioning as a safe local Prisma 
 
 ## Further Notes
 
-- Query Lab should become a major differentiator for Prisma Viewer: a safe local Prisma query workbench with inspection and performance feedback.
+- Query Lab should become a major differentiator for Prisma Pad: a safe local Prisma query workbench with inspection and performance feedback.
 - The product should continue to position itself as read-only and app-context-aware rather than as a general database editor.
 - The strongest MVP is not "a scratchpad" by itself; it is the full loop of args editing, safe execution, result preview, query inspector, warnings, and saved views.
-- The feature should make Prisma Viewer useful when a developer wants to understand records, relations, and query behavior without risking accidental data mutation.
+- The feature should make Prisma Pad useful when a developer wants to understand records, relations, and query behavior without risking accidental data mutation.
 - If Prisma snippet mode is added later, it should compile down to the same validated internal query description used by Args Mode.
 - If EXPLAIN support is added later, it should only run against SQL generated from an already-validated read-only Prisma query and should remain opt-in.

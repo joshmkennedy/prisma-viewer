@@ -1,4 +1,4 @@
-import { formatApiError } from "./prisma-viewer-client";
+import { formatApiError } from "./prisma-pad-client";
 import type {
   QueryLabOperation,
   QueryLabPreviewResponse,

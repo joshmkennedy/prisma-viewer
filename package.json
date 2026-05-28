@@ -1,7 +1,7 @@
 {
-  "name": "prisma-viewer",
+  "name": "prisma-pad",
   "private": false,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "files": [
     "dist",
@@ -11,14 +11,16 @@
     "vite.config.ts"
   ],
   "bin": {
-    "prisma-view": "./dist/node/cli.js",
-    "prisma-viewer": "./dist/node/cli.js"
+    "prisma-pad": "dist/node/cli.js"
   },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build && tsc -p tsconfig.node.json && node scripts/make-cli-executable.mjs",
+    "changeset": "changeset",
     "prepare": "npm run build",
     "preview": "vite preview",
+    "release": "changeset publish",
+    "version-packages": "changeset version",
     "test": "vitest run"
   },
   "dependencies": {
@@ -40,6 +42,7 @@
     "vite": "^6.0.1"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.31.0",
     "@prisma/client": "^6.19.3",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",

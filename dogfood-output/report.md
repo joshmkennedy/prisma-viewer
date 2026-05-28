@@ -1,10 +1,10 @@
-# Dogfood Report: Prisma Viewer Query Lab
+# Dogfood Report: Prisma Pad Query Lab
 
 | Field | Value |
 |-------|-------|
 | **Date** | 2026-05-28 |
 | **App URL** | http://127.0.0.1:5174/ |
-| **Session** | prisma-viewer-query-lab-qa |
+| **Session** | prisma-pad-query-lab-qa |
 | **Scope** | Query Lab end-to-end QA against the local Prisma fixture app |
 
 ## Summary

@@ -112,7 +112,7 @@ async function handleQueryLabPreviewRequest(
     sendJson(response, 405, {
       error: {
         code: "METHOD_NOT_ALLOWED",
-        message: "Prisma Viewer exposes only read-only API endpoints.",
+        message: "Prisma Pad exposes only read-only API endpoints.",
       },
     });
     return;
@@ -343,7 +343,7 @@ function handleModelsRequest(
     sendJson(response, 405, {
       error: {
         code: "METHOD_NOT_ALLOWED",
-        message: "Prisma Viewer exposes only read-only API endpoints.",
+        message: "Prisma Pad exposes only read-only API endpoints.",
       },
     });
     return;
@@ -376,7 +376,7 @@ async function handleRowsRequest(
     sendJson(response, 405, {
       error: {
         code: "METHOD_NOT_ALLOWED",
-        message: "Prisma Viewer exposes only read-only API endpoints.",
+        message: "Prisma Pad exposes only read-only API endpoints.",
       },
     });
     return;

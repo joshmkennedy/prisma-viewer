@@ -65,7 +65,7 @@ function prismaApiPlugin(
   middleware: ReturnType<typeof createPrismaApiMiddleware>,
 ): Plugin {
   return {
-    name: "prisma-viewer-api",
+    name: "prisma-pad-api",
     configureServer(server) {
       server.middlewares.use(middleware);
     },
@@ -90,14 +90,14 @@ function findViewerRoot() {
         name?: string;
       };
 
-      if (packageJson.name === "prisma-viewer") {
+      if (packageJson.name === "prisma-pad") {
         return current;
       }
     }
 
     const parent = dirname(current);
     if (parent === current) {
-      throw new Error("Could not find prisma-viewer package root.");
+      throw new Error("Could not find prisma-pad package root.");
     }
     current = parent;
   }

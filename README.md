@@ -1,6 +1,6 @@
-# Prisma Viewer
+# Prisma Pad
 
-Prisma Viewer is a local, read-only data viewer for Prisma applications. It starts from a target app directory, loads that app's environment, uses that app's generated Prisma Client, and serves a browser UI for inspecting model rows and individual records.
+Prisma Pad is a local, read-only data viewer for Prisma applications. It starts from a target app directory, loads that app's environment, uses that app's generated Prisma Client, and serves a browser UI for inspecting model rows and individual records.
 
 ## Requirements
 
@@ -12,6 +12,16 @@ Prisma Viewer is a local, read-only data viewer for Prisma applications. It star
   - a generated Prisma Client
   - `DATABASE_URL` exported in the shell or defined in `.env.local` or `.env`
   - a reachable development database
+
+## Run With npx
+
+From any Prisma app directory, run:
+
+```sh
+npx prisma-pad
+```
+
+Prisma Pad starts a local dev server and opens the browser automatically.
 
 ## Install This Project
 
@@ -44,34 +54,34 @@ Make sure the app has `DATABASE_URL` exported in the shell or defined in `.env.l
 DATABASE_URL="file:./dev.db"
 ```
 
-Prisma Viewer loads `.env.local` first and `.env` second. When both files define the same variable, `.env.local` wins.
+Prisma Pad loads `.env.local` first and `.env` second. When both files define the same variable, `.env.local` wins.
 
-## Run Prisma Viewer
+## Run Prisma Pad
 
 From any Prisma app directory, run:
 
 ```sh
-prisma-view
+prisma-pad
 ```
 
-Prisma Viewer starts a local dev server and opens the browser automatically.
+Prisma Pad starts a local dev server and opens the browser automatically.
 
 You can also run the CLI against a specific Prisma app:
 
 ```sh
-prisma-view --root /path/to/your/prisma-app
+prisma-pad --root /path/to/your/prisma-app
 ```
 
 You can also pass the app root as the first positional argument:
 
 ```sh
-prisma-view /path/to/your/prisma-app
+prisma-pad /path/to/your/prisma-app
 ```
 
 The CLI prints a local URL such as:
 
 ```txt
-Prisma Viewer running at http://127.0.0.1:54321/
+Prisma Pad running at http://127.0.0.1:54321/
 ```
 
 If you do not want the browser to open automatically, pass `--no-open`.
@@ -79,7 +89,7 @@ If you do not want the browser to open automatically, pass `--no-open`.
 ## CLI Options
 
 ```sh
-prisma-view [app-root] [--root <path>] [--host <host>] [--port <port>] [--no-open]
+prisma-pad [app-root] [--root <path>] [--host <host>] [--port <port>] [--no-open]
 ```
 
 - `app-root`: Target Prisma app directory. Defaults to the current working directory.
@@ -93,7 +103,7 @@ prisma-view [app-root] [--root <path>] [--host <host>] [--port <port>] [--no-ope
 Example with a fixed port:
 
 ```sh
-prisma-view --root ../my-app --port 5174
+prisma-pad --root ../my-app --port 5174
 ```
 
 ## Development

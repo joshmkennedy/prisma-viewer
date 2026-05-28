@@ -181,7 +181,7 @@ function makeTempApp(
     prismaClient?: boolean | "missing-generated" | "connect-failure";
   } = {},
 ) {
-  const dir = mkdtempSync(path.join(tmpdir(), "prisma-viewer-startup-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "prisma-pad-startup-"));
   createdDirs.push(dir);
 
   writeFileSync(path.join(dir, "package.json"), JSON.stringify({ type: "module" }));

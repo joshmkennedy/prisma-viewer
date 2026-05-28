@@ -1,4 +1,4 @@
-Prisma Viewer integration fixture
+Prisma Pad integration fixture
 =================================
 
 This is a local-development-only Prisma fixture used by the integration test

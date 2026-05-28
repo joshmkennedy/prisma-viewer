@@ -7,7 +7,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { toast } from "sonner";
 import { Button } from "../../components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "../../components/ui/tabs";
-import { fetchModelMetadata } from "../../api/prisma-viewer-client";
+import { fetchModelMetadata } from "../../api/prisma-pad-client";
 import { previewQueryLab } from "../../api/query-lab-client";
 import { formatFieldType, formatValue } from "../../domain/row-formatting";
 import { RecordPreview } from "../record-preview/RecordPreview";
@@ -260,7 +260,7 @@ export function QueryLabRoute({ initialModelName }: { initialModelName: string |
             <Database className="h-4 w-4 text-primary" aria-hidden="true" />
           </div>
           <div className="min-w-0">
-            <h1 className="truncate text-sm font-semibold">Prisma Viewer</h1>
+            <h1 className="truncate text-sm font-semibold">Prisma Pad</h1>
             <p className="truncate font-mono text-[10px] uppercase text-muted-foreground">
               query lab
             </p>
@@ -938,4 +938,3 @@ export function QueryLabRoute({ initialModelName }: { initialModelName: string |
     </main>
   );
 }
-
