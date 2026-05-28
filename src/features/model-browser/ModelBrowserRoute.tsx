@@ -5,7 +5,7 @@ import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ChevronLeft, ChevronRight
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "../../components/ui/button";
-import { fetchModelMetadata, fetchModelRows } from "../../api/prisma-viewer-client";
+import { fetchModelMetadata, fetchModelRows } from "../../api/prisma-pad-client";
 import type { Model } from "../../domain/prisma-metadata";
 import { formatFieldType, formatValue, getCellTone } from "../../domain/row-formatting";
 import { RecordPreview } from "../record-preview/RecordPreview";
@@ -413,7 +413,7 @@ export function ModelBrowserRoute({
             <Database className="h-4 w-4 text-primary" aria-hidden="true" />
           </div>
           <div className="min-w-0">
-            <h1 className="truncate text-sm font-semibold">Prisma Viewer</h1>
+            <h1 className="truncate text-sm font-semibold">Prisma Pad</h1>
             <p className="truncate font-mono text-[10px] uppercase text-muted-foreground">
               read-only local database viewer
             </p>

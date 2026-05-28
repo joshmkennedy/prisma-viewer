@@ -31,7 +31,7 @@ export async function main(argv = process.argv.slice(2)) {
       port: options.port,
     });
 
-    console.log(`Prisma Viewer running at ${url}`);
+    console.log(`Prisma Pad running at ${url}`);
     console.log(`App root: ${context.appRoot}`);
     if (context.loadedEnvFiles.length > 0) {
       console.log(
@@ -49,7 +49,7 @@ export async function main(argv = process.argv.slice(2)) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(
-      error instanceof StartupError ? message : `Failed to start Prisma Viewer: ${message}`,
+      error instanceof StartupError ? message : `Failed to start Prisma Pad: ${message}`,
     );
     return 1;
   }
@@ -131,9 +131,9 @@ function parsePort(value: string) {
 }
 
 function helpText() {
-  return `Usage: prisma-view [app-root] [--root <path>] [--host <host>] [--port <port>] [--no-open]
+  return `Usage: prisma-pad [app-root] [--root <path>] [--host <host>] [--port <port>] [--no-open]
 
-Starts Prisma Viewer against a local Prisma app.
+Starts Prisma Pad against a local Prisma app.
 
 Options:
   --root <path>   Target app root. Defaults to the current working directory.

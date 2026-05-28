@@ -150,7 +150,7 @@ describe("createPrismaApiMiddleware", () => {
     expect(JSON.parse(response.body)).toEqual({
       error: {
         code: "METHOD_NOT_ALLOWED",
-        message: "Prisma Viewer exposes only read-only API endpoints.",
+        message: "Prisma Pad exposes only read-only API endpoints.",
       },
     });
   });
@@ -750,7 +750,7 @@ describe("createPrismaApiMiddleware", () => {
     expect(JSON.parse(response.body)).toEqual({
       error: {
         code: "METHOD_NOT_ALLOWED",
-        message: "Prisma Viewer exposes only read-only API endpoints.",
+        message: "Prisma Pad exposes only read-only API endpoints.",
       },
     });
   });

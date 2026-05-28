@@ -30,7 +30,7 @@ export function prepareStartup(options: StartupOptions = {}): StartupContext {
   if (loadedFiles.length === 0) {
     if (!databaseUrl) {
       throw new StartupError(
-        `Database configuration is missing. Set DATABASE_URL in the shell environment, or add .env.local or .env to ${appRoot} before starting Prisma Viewer.`,
+        `Database configuration is missing. Set DATABASE_URL in the shell environment, or add .env.local or .env to ${appRoot} before starting Prisma Pad.`,
       );
     }
   }
@@ -55,7 +55,7 @@ function resolvePrismaPackage(appRoot: string) {
     return createRequire(path.join(appRoot, "package.json")).resolve("prisma/package.json");
   } catch {
     throw new StartupError(
-      `Prisma is not installed in ${appRoot}. Install prisma in the target app before starting Prisma Viewer.`,
+      `Prisma is not installed in ${appRoot}. Install prisma in the target app before starting Prisma Pad.`,
     );
   }
 }

@@ -32,7 +32,7 @@ export async function createTargetPrismaRuntime(
 
   if (typeof PrismaClient !== "function") {
     throw new StartupError(
-      `The generated Prisma Client in ${context.appRoot} did not export PrismaClient. Run prisma generate in the target app and restart Prisma Viewer.`,
+      `The generated Prisma Client in ${context.appRoot} did not export PrismaClient. Run prisma generate in the target app and restart Prisma Pad.`,
     );
   }
 
@@ -91,7 +91,7 @@ function prismaClientLoadError(context: StartupContext, error: unknown) {
 
 function missingGeneratedClientError(context: StartupContext) {
   return new StartupError(
-    `The generated Prisma Client is missing for ${context.appRoot}. Run prisma generate in the target app, then restart Prisma Viewer.`,
+    `The generated Prisma Client is missing for ${context.appRoot}. Run prisma generate in the target app, then restart Prisma Pad.`,
   );
 }
 

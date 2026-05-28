@@ -3,10 +3,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FIXTURE_DIR="$ROOT_DIR/tests/fixtures/prisma-app"
-WORK_FIXTURE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/prisma-viewer-fixture.XXXXXX")"
+WORK_FIXTURE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/prisma-pad-fixture.XXXXXX")"
 PRISMA_BIN="$ROOT_DIR/node_modules/.bin/prisma"
 PORT="${PORT:-5174}"
-SESSION="${SESSION:-prisma-viewer-refactor}"
+SESSION="${SESSION:-prisma-pad-refactor}"
 BASE_URL="http://127.0.0.1:$PORT"
 
 cp -R "$FIXTURE_DIR/." "$WORK_FIXTURE_DIR"

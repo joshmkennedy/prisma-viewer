@@ -17,7 +17,7 @@ export type SavedQueryLabView = {
 };
 
 export const QUERY_LAB_SAVED_VIEWS_STORAGE_KEY =
-  "prisma-viewer.query-lab.saved-views.v1";
+  "prisma-pad.query-lab.saved-views.v1";
 
 export type SaveSavedQueryLabViewInput = {
   currentViews: SavedQueryLabView[];

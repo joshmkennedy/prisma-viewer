@@ -849,7 +849,7 @@ describe("App Query Lab", () => {
     await userEvent.type(screen.getByLabelText("Saved Query Lab view name"), "Post lookup");
     await userEvent.click(screen.getByRole("button", { name: "Save Query Lab view" }));
 
-    const storageKey = "prisma-viewer.query-lab.saved-views.v1";
+    const storageKey = "prisma-pad.query-lab.saved-views.v1";
     const savedViews = JSON.parse(window.localStorage.getItem(storageKey) ?? "[]") as Array<{
       name?: string;
       argsSource?: string;

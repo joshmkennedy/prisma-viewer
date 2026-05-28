@@ -1,4 +1,4 @@
-# Prisma Viewer PRD
+# Prisma Pad PRD
 
 ## Problem Statement
 

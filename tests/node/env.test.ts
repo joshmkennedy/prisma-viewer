@@ -76,7 +76,7 @@ describe("loadAppEnv", () => {
 });
 
 function makeTempApp() {
-  const dir = mkdtempSync(path.join(tmpdir(), "prisma-viewer-env-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "prisma-pad-env-"));
   mkdirSync(dir, { recursive: true });
   createdDirs.push(dir);
   return dir;

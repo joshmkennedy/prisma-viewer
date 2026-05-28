@@ -32,7 +32,7 @@ type StartedApiServer = {
 
 beforeAll(() => {
   originalDatabaseUrl = process.env.DATABASE_URL;
-  appRoot = mkdtempSync(path.join(tmpdir(), "prisma-viewer-fixture-"));
+  appRoot = mkdtempSync(path.join(tmpdir(), "prisma-pad-fixture-"));
   cpSync(fixtureRoot, appRoot, { recursive: true });
   symlinkSync(path.join(projectRoot, "node_modules"), path.join(appRoot, "node_modules"));
 
