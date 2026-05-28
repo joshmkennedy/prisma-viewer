@@ -52,6 +52,8 @@ beforeAll(() => {
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 async function main() {
+  await prisma.post.deleteMany();
+  await prisma.user.deleteMany();
   const ada = await prisma.user.create({
     data: { email: "ada@example.com", name: "Ada Lovelace" },
   });
