@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -268,6 +268,58 @@ describe("App Query Lab", () => {
     expect(await screen.findByText("Count")).toBeTruthy();
     expect(screen.getByText("42")).toBeTruthy();
     expect(screen.queryByRole("table")).toBeNull();
+  });
+
+  it("renders the Query Inspector with capped normalized args and a copyable Prisma call", async () => {
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: [{ id: "user_1", email: "ada@example.com" }],
+      },
+    });
+
+    renderApp("/query-lab");
+
+    const editor = await screen.findByLabelText("Args Mode editor");
+    fireEvent.input(editor, {
+      currentTarget: {
+        textContent:
+          '{"where":{"email":{"contains":"example.com"}},"take":500}',
+      },
+      target: {
+        textContent:
+          '{"where":{"email":{"contains":"example.com"}},"take":500}',
+      },
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/query-lab/preview",
+        expect.objectContaining({
+          body: JSON.stringify({
+            model: "User",
+            operation: "findMany",
+            argsSource: '{"where":{"email":{"contains":"example.com"}},"take":500}',
+          }),
+        }),
+      );
+    });
+
+    expect(await screen.findByLabelText("Query Inspector")).toBeTruthy();
+    expect(screen.getByText("User.findMany")).toBeTruthy();
+    expect(screen.getByText("take: capped from 500 to 100")).toBeTruthy();
+    expect(screen.getByLabelText("Normalized Query Lab args").textContent).toContain(
+      '"take": 100',
+    );
+    expect(screen.getByLabelText("Normalized Query Lab args").textContent).toContain(
+      '"email"',
+    );
+    expect(screen.getByLabelText("Prisma Client call").textContent).toContain(
+      "prisma.user.findMany",
+    );
+    expect(screen.getByRole("button", { name: "Copy Prisma Client call" })).toBeTruthy();
   });
 
   it("shows Query Lab loading and error states", async () => {
@@ -1314,6 +1366,8 @@ function mockApiResponses({
       return {
         ok: true,
         json: async () => {
+          const parsedArgs = parseMockQueryLabArgs(body.argsSource);
+          const normalized = normalizeMockQueryLabArgs(operation, parsedArgs);
           const result =
             resultForOperation !== undefined
               ? resultForOperation
@@ -1323,7 +1377,10 @@ function mockApiResponses({
           return {
             model: body.model,
             operation,
-            args: parseMockQueryLabArgs(body.argsSource),
+            args: normalized.args,
+            normalizedArgs: normalized.args,
+            normalization: normalized.normalization,
+            prismaCall: formatMockPrismaCall(body.model, operation, normalized.args),
             result,
             rows: operation === "findMany" ? result : undefined,
           };
@@ -1339,8 +1396,43 @@ function mockApiResponses({
 
 function parseMockQueryLabArgs(argsSource: string | undefined) {
   if (!argsSource) return {};
+  try {
+    const parsed = JSON.parse(argsSource) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Fall through to the lightweight parser used for object-literal defaults.
+  }
   const takeMatch = /\btake\s*:\s*(\d+)/.exec(argsSource);
   return takeMatch ? { take: Number(takeMatch[1]) } : {};
+}
+
+function normalizeMockQueryLabArgs(operation: string, args: Record<string, unknown>) {
+  if (operation !== "findMany") return { args, normalization: [] };
+  const take = args.take;
+  if (typeof take === "number" && take > 100) {
+    return {
+      args: { ...args, take: 100 },
+      normalization: [
+        {
+          path: "take",
+          action: "cap",
+          reason: "findManyMaxTake",
+          originalValue: take,
+          value: 100,
+        },
+      ],
+    };
+  }
+  return { args, normalization: [] };
+}
+
+function formatMockPrismaCall(modelName: string | undefined, operation: string, args: unknown) {
+  const delegateName = modelName
+    ? `${modelName.charAt(0).toLowerCase()}${modelName.slice(1)}`
+    : "model";
+  return `prisma.${delegateName}.${operation}(${JSON.stringify(args, null, 2)})`;
 }
 
 function mockPendingModelsResponse() {

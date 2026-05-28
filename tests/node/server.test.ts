@@ -789,6 +789,17 @@ describe("createPrismaApiMiddleware", () => {
       model: "User",
       operation: "findMany",
       args: { where: { id: "user_1" }, take: 50 },
+      normalizedArgs: { where: { id: "user_1" }, take: 50 },
+      normalization: [
+        {
+          path: "take",
+          action: "default",
+          reason: "findManySafetyTake",
+          value: 50,
+        },
+      ],
+      prismaCall:
+        'prisma.user.findMany({\n  where: {\n    id: "user_1"\n  },\n  take: 50\n})',
       result: [{ id: "user_1" }],
       rows: [{ id: "user_1" }],
     });
@@ -848,6 +859,9 @@ describe("createPrismaApiMiddleware", () => {
       model: "User",
       operation,
       args: expectedArgs,
+      normalizedArgs: expectedArgs,
+      normalization: [],
+      prismaCall: `prisma.user.${operation}({\n  where: {\n    id: "user_1"\n  }\n})`,
       result,
     });
   });
@@ -887,6 +901,9 @@ describe("createPrismaApiMiddleware", () => {
         model: "User",
         operation,
         args: { where: { id: "missing" } },
+        normalizedArgs: { where: { id: "missing" } },
+        normalization: [],
+        prismaCall: `prisma.user.${operation}({\n  where: {\n    id: "missing"\n  }\n})`,
         result: null,
       });
     },
@@ -934,6 +951,27 @@ describe("createPrismaApiMiddleware", () => {
         take: 100,
       },
     ]);
+    expect(JSON.parse(response.body)).toMatchObject({
+      args: {
+        where: { email: { contains: "example.com" } },
+        take: 100,
+      },
+      normalizedArgs: {
+        where: { email: { contains: "example.com" } },
+        take: 100,
+      },
+      normalization: [
+        {
+          path: "take",
+          action: "cap",
+          reason: "findManyMaxTake",
+          originalValue: 500,
+          value: 100,
+        },
+      ],
+    });
+    expect(JSON.parse(response.body).prismaCall).toContain("prisma.user.findMany");
+    expect(JSON.parse(response.body).prismaCall).toContain("take: 100");
   });
 
   it("rejects unknown Query Lab top-level findMany args before reaching delegates", async () => {

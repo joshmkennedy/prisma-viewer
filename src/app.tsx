@@ -33,6 +33,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Code2,
+  Copy,
   Database,
   FileJson,
   Filter,
@@ -80,6 +81,9 @@ type QueryLabPreviewResponse = {
   model: string;
   operation: QueryLabOperation;
   args: Record<string, unknown>;
+  normalizedArgs?: Record<string, unknown>;
+  normalization?: QueryLabArgsNormalization[];
+  prismaCall?: string;
   result?: unknown;
   rows?: unknown[];
 };
@@ -104,6 +108,21 @@ type RowLoadState =
 type PreviewMode = "fields" | "json";
 type FilterOperator = "contains" | "equals" | "startsWith" | "endsWith" | "empty" | "notEmpty";
 type QueryLabOperation = "findMany" | "findFirst" | "findUnique" | "count";
+
+type QueryLabArgsNormalization =
+  | {
+      path: string;
+      action: "default";
+      reason: string;
+      value: unknown;
+    }
+  | {
+      path: string;
+      action: "cap";
+      reason: string;
+      originalValue: unknown;
+      value: unknown;
+    };
 
 type TableFilter = {
   id: string;
@@ -402,6 +421,10 @@ function formatJsonPreview(row: Record<string, unknown>) {
   return JSON.stringify(toStableJsonValue(row), null, 2);
 }
 
+function formatJsonBlock(value: unknown) {
+  return JSON.stringify(toStableJsonValue(value), null, 2);
+}
+
 function columnsForRows(rows: unknown[]) {
   const columns = new Set<string>();
   for (const row of rows) {
@@ -417,6 +440,14 @@ function rowsForQueryLabResult(operation: QueryLabOperation, result: unknown) {
     return isRowObject(result) ? [result] : [];
   }
   return [];
+}
+
+function describeQueryLabNormalization(item: QueryLabArgsNormalization) {
+  if (item.action === "cap") {
+    return `${item.path}: capped from ${formatValue(item.originalValue)} to ${formatValue(item.value)}`;
+  }
+
+  return `${item.path}: safety default ${formatValue(item.value)} applied`;
 }
 
 function isQueryLabOperation(value: unknown): value is QueryLabOperation {
@@ -718,6 +749,12 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
     (previewMutation.data.operation === "findFirst" ||
       previewMutation.data.operation === "findUnique") &&
     previewResult === null;
+  const inspectorArgs = previewMutation.data?.normalizedArgs ?? previewMutation.data?.args;
+  const inspectorPrismaCall =
+    previewMutation.data?.prismaCall ??
+    (previewMutation.data
+      ? `prisma.${previewMutation.data.model.charAt(0).toLowerCase()}${previewMutation.data.model.slice(1)}.${previewMutation.data.operation}(${formatJsonBlock(inspectorArgs ?? {})})`
+      : "");
   const canRun =
     Boolean(selectedModel) &&
     modelQuery.isSuccess &&
@@ -896,72 +933,140 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
           </div>
 
           <div className="min-h-0 flex-1 overflow-auto">
-            {previewMutation.isPending ? (
-              <div className="p-6 text-center text-xs text-muted-foreground">
-                Running preview...
-              </div>
-            ) : previewMutation.isError ? (
-              <div className="p-6 text-center text-xs text-muted-foreground">
-                <p className="font-medium text-danger">Could not run preview.</p>
-                <p className="mt-1">
-                  {previewMutation.error instanceof Error
-                    ? previewMutation.error.message
-                    : "Query Lab preview failed."}
-                </p>
-              </div>
-            ) : !previewMutation.data ? (
-              <div className="p-6 text-center text-xs text-muted-foreground">
-                Preview results will appear here.
-              </div>
-            ) : scalarCount !== null ? (
-              <div className="p-6">
-                <div className="inline-flex min-w-36 flex-col rounded-md border border-border bg-panel px-4 py-3">
-                  <span className="text-xs font-medium text-muted-foreground">Count</span>
-                  <span className="mt-1 font-mono text-3xl font-semibold text-foreground">
-                    {scalarCount}
-                  </span>
+            <div className="min-h-[220px]">
+              {previewMutation.isPending ? (
+                <div className="p-6 text-center text-xs text-muted-foreground">
+                  Running preview...
                 </div>
-              </div>
-            ) : emptySingleRecordResult ? (
-              <div className="p-6 text-center text-xs text-muted-foreground">
-                No record matched this {previewMutation.data.operation} query.
-              </div>
-            ) : rowColumns.length > 0 ? (
-              <table className="w-max min-w-full border-collapse text-left text-xs">
-                <thead className="sticky top-0 bg-panel">
-                  <tr>
-                    {rowColumns.map((column) => (
-                      <th
-                        key={column}
-                        className="min-w-[150px] border-b border-r border-border px-3 py-2 font-medium text-muted-foreground last:border-r-0"
-                      >
-                        {column}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {(resultRows as Record<string, unknown>[]).map((row, index) => (
-                    <tr key={index} className="h-10 border-b border-border">
+              ) : previewMutation.isError ? (
+                <div className="p-6 text-center text-xs text-muted-foreground">
+                  <p className="font-medium text-danger">Could not run preview.</p>
+                  <p className="mt-1">
+                    {previewMutation.error instanceof Error
+                      ? previewMutation.error.message
+                      : "Query Lab preview failed."}
+                  </p>
+                </div>
+              ) : !previewMutation.data ? (
+                <div className="p-6 text-center text-xs text-muted-foreground">
+                  Preview results will appear here.
+                </div>
+              ) : scalarCount !== null ? (
+                <div className="p-6">
+                  <div className="inline-flex min-w-36 flex-col rounded-md border border-border bg-panel px-4 py-3">
+                    <span className="text-xs font-medium text-muted-foreground">Count</span>
+                    <span className="mt-1 font-mono text-3xl font-semibold text-foreground">
+                      {scalarCount}
+                    </span>
+                  </div>
+                </div>
+              ) : emptySingleRecordResult ? (
+                <div className="p-6 text-center text-xs text-muted-foreground">
+                  No record matched this {previewMutation.data.operation} query.
+                </div>
+              ) : rowColumns.length > 0 ? (
+                <table className="w-max min-w-full border-collapse text-left text-xs">
+                  <thead className="sticky top-0 bg-panel">
+                    <tr>
                       {rowColumns.map((column) => (
-                        <td
+                        <th
                           key={column}
-                          className="min-w-[150px] border-r border-border px-3 py-1.5 last:border-r-0"
+                          className="min-w-[150px] border-b border-r border-border px-3 py-2 font-medium text-muted-foreground last:border-r-0"
                         >
-                          <span className="block max-h-5 truncate font-mono text-[11px] leading-5">
-                            {formatValue(row[column])}
-                          </span>
-                        </td>
+                          {column}
+                        </th>
                       ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : (
-              <pre className="m-3 overflow-auto rounded-md border border-border bg-panel p-3 font-mono text-[11px] text-code">
-                {JSON.stringify(toStableJsonValue(previewResult), null, 2)}
-              </pre>
-            )}
+                  </thead>
+                  <tbody>
+                    {(resultRows as Record<string, unknown>[]).map((row, index) => (
+                      <tr key={index} className="h-10 border-b border-border">
+                        {rowColumns.map((column) => (
+                          <td
+                            key={column}
+                            className="min-w-[150px] border-r border-border px-3 py-1.5 last:border-r-0"
+                          >
+                            <span className="block max-h-5 truncate font-mono text-[11px] leading-5">
+                              {formatValue(row[column])}
+                            </span>
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <pre className="m-3 overflow-auto rounded-md border border-border bg-panel p-3 font-mono text-[11px] text-code">
+                  {formatJsonBlock(previewResult)}
+                </pre>
+              )}
+            </div>
+
+            {previewMutation.data ? (
+              <section
+                aria-label="Query Inspector"
+                className="border-t border-border bg-panel px-3 py-3"
+              >
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold">Query Inspector</h2>
+                    <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+                      {previewMutation.data.model}.{previewMutation.data.operation}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      void navigator.clipboard?.writeText(inspectorPrismaCall);
+                    }}
+                    aria-label="Copy Prisma Client call"
+                  >
+                    <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                    Copy
+                  </Button>
+                </div>
+
+                <div className="grid gap-3 lg:grid-cols-2">
+                  <div className="min-w-0">
+                    <div className="mb-1 text-xs font-medium text-muted-foreground">
+                      Normalized Args
+                    </div>
+                    <pre
+                      aria-label="Normalized Query Lab args"
+                      className="max-h-72 overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-[11px] text-code"
+                    >
+                      {formatJsonBlock(inspectorArgs ?? {})}
+                    </pre>
+                    {(previewMutation.data.normalization?.length ?? 0) > 0 ? (
+                      <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+                        {previewMutation.data.normalization?.map((item) => (
+                          <li key={`${item.action}-${item.path}`}>
+                            {describeQueryLabNormalization(item)}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        All displayed args came from the editor input.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="min-w-0">
+                    <div className="mb-1 text-xs font-medium text-muted-foreground">
+                      Prisma Client Call
+                    </div>
+                    <pre
+                      aria-label="Prisma Client call"
+                      className="max-h-72 overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-[11px] text-code"
+                    >
+                      {inspectorPrismaCall}
+                    </pre>
+                  </div>
+                </div>
+              </section>
+            ) : null}
           </div>
         </section>
       </section>

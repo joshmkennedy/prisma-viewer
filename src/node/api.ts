@@ -12,6 +12,21 @@ const MAX_QUERY_LAB_TAKE = 100;
 const MAX_REQUEST_BODY_BYTES = 256 * 1024;
 const QUERY_LAB_OPERATIONS = ["findMany", "findFirst", "findUnique", "count"] as const;
 
+type QueryLabArgsNormalization =
+  | {
+      path: string;
+      action: "default";
+      reason: "findManySafetyTake";
+      value: unknown;
+    }
+  | {
+      path: string;
+      action: "cap";
+      reason: "findManyMaxTake";
+      originalValue: unknown;
+      value: unknown;
+    };
+
 type ApiErrorCode =
   | "DELEGATE_UNAVAILABLE"
   | "INVALID_FILTER"
@@ -195,14 +210,21 @@ async function handleQueryLabPreviewRequest(
     return;
   }
 
-  const args =
-    operation === "findMany" ? capFindManyArgs(validatedArgs.args) : validatedArgs.args;
+  const normalized =
+    operation === "findMany"
+      ? normalizeFindManyArgs(validatedArgs.args)
+      : { args: validatedArgs.args, normalization: [] };
+  const prismaCall = formatPrismaClientCall(model.name, operation, normalized.args);
+
   try {
-    const result = await delegate[operation](args);
+    const result = await delegate[operation](normalized.args);
     sendJson(response, 200, {
       model: model.name,
       operation,
-      args,
+      args: normalized.args,
+      normalizedArgs: normalized.args,
+      normalization: normalized.normalization,
+      prismaCall,
       result,
       rows: operation === "findMany" && Array.isArray(result) ? result : undefined,
     });
@@ -662,20 +684,92 @@ async function readJsonBody(
   }
 }
 
-function capFindManyArgs(args: Record<string, unknown>) {
+function normalizeFindManyArgs(args: Record<string, unknown>): {
+  args: Record<string, unknown>;
+  normalization: QueryLabArgsNormalization[];
+} {
   const take = args.take;
   if (take === undefined || take === null) {
-    return { ...args, take: DEFAULT_QUERY_LAB_TAKE };
+    return {
+      args: { ...args, take: DEFAULT_QUERY_LAB_TAKE },
+      normalization: [
+        {
+          path: "take",
+          action: "default",
+          reason: "findManySafetyTake",
+          value: DEFAULT_QUERY_LAB_TAKE,
+        },
+      ],
+    };
   }
 
   if (typeof take !== "number" || !Number.isInteger(take) || take < 1) {
-    return { ...args, take: DEFAULT_QUERY_LAB_TAKE };
+    return {
+      args: { ...args, take: DEFAULT_QUERY_LAB_TAKE },
+      normalization: [
+        {
+          path: "take",
+          action: "default",
+          reason: "findManySafetyTake",
+          value: DEFAULT_QUERY_LAB_TAKE,
+        },
+      ],
+    };
   }
 
-  return {
-    ...args,
-    take: Math.min(take, MAX_QUERY_LAB_TAKE),
-  };
+  if (take > MAX_QUERY_LAB_TAKE) {
+    return {
+      args: {
+        ...args,
+        take: MAX_QUERY_LAB_TAKE,
+      },
+      normalization: [
+        {
+          path: "take",
+          action: "cap",
+          reason: "findManyMaxTake",
+          originalValue: take,
+          value: MAX_QUERY_LAB_TAKE,
+        },
+      ],
+    };
+  }
+
+  return { args, normalization: [] };
+}
+
+function formatPrismaClientCall(
+  modelName: string,
+  operation: QueryLabOperation,
+  args: Record<string, unknown>,
+) {
+  return `prisma.${delegateNameForModel(modelName)}.${operation}(${formatPrismaValue(args, 0)})`;
+}
+
+function formatPrismaValue(value: unknown, depth: number): string {
+  const indent = "  ".repeat(depth);
+  const nextIndent = "  ".repeat(depth + 1);
+
+  if (value instanceof Date) return `new Date(${JSON.stringify(value.toISOString())})`;
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "[]";
+    return `[\n${value
+      .map((item) => `${nextIndent}${formatPrismaValue(item, depth + 1)}`)
+      .join(",\n")}\n${indent}]`;
+  }
+  if (isRecord(value)) {
+    const entries = Object.entries(value);
+    if (entries.length === 0) return "{}";
+    return `{\n${entries
+      .map(([key, item]) => `${nextIndent}${formatObjectKey(key)}: ${formatPrismaValue(item, depth + 1)}`)
+      .join(",\n")}\n${indent}}`;
+  }
+
+  return JSON.stringify(value);
+}
+
+function formatObjectKey(key: string) {
+  return /^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key);
 }
 
 function isQueryLabOperation(value: unknown): value is QueryLabOperation {
