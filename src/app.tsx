@@ -14,6 +14,15 @@ import {
   useQuery,
 } from "@tanstack/react-query";
 import {
+  createRootRoute,
+  createRoute,
+  createRouter,
+  Link,
+  Outlet,
+  RouterProvider,
+  useNavigate,
+} from "@tanstack/react-router";
+import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
@@ -364,21 +373,51 @@ async function formatApiError(response: Response, label: string) {
   return `${label} returned ${response.status}`;
 }
 
+const rootRoute = createRootRoute({
+  component: () => <Outlet />,
+});
+
+const indexRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/",
+  component: () => <AppContent routedModelName={null} />,
+});
+
+const modelRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/model/$modelName",
+  component: ModelRoute,
+});
+
+const routeTree = rootRoute.addChildren([indexRoute, modelRoute]);
+const router = createRouter({ routeTree });
+
+declare module "@tanstack/react-router" {
+  interface Register {
+    router: typeof router;
+  }
+}
+
 export function App() {
   const [queryClient] = useState(createQueryClient);
 
   return (
     <QueryClientProvider client={queryClient}>
-      <AppContent />
+      <RouterProvider router={router} />
     </QueryClientProvider>
   );
 }
 
-function AppContent() {
+function ModelRoute() {
+  const { modelName } = modelRoute.useParams();
+  return <AppContent routedModelName={modelName} />;
+}
+
+function AppContent({ routedModelName }: { routedModelName: string | null }) {
+  const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [tableSearch, setTableSearch] = useState("");
   const [tableFilters, setTableFilters] = useState<TableFilter[]>([]);
-  const [selectedModelName, setSelectedModelName] = useState<string | null>(null);
   const [loadedTableRefinements, setLoadedTableRefinements] = useState<TableRefinements>({
     search: "",
     filters: [],
@@ -419,7 +458,10 @@ function AppContent() {
   );
 
   const selectedModel =
-    models.find((model) => model.name === selectedModelName) ?? models[0] ?? null;
+    routedModelName === null
+      ? null
+      : (models.find((model) => model.name === routedModelName) ?? null);
+  const isModelRoute = routedModelName !== null;
   const tableFields = useMemo(
     () =>
       selectedModel?.fields.filter(
@@ -512,18 +554,6 @@ function AppContent() {
       : rowQuery.isFetching
         ? { status: "loading", rows: rowQuery.data?.rows ?? [], error: null }
         : { status: "success", rows: rowQuery.data?.rows ?? [], error: null };
-
-  useEffect(() => {
-    if (modelQuery.isSuccess) {
-      setSelectedModelName((current) => current ?? modelQuery.data[0]?.name ?? null);
-    }
-  }, [modelQuery.data, modelQuery.isSuccess]);
-
-  useEffect(() => {
-    if (modelQuery.isError) {
-      setSelectedModelName(null);
-    }
-  }, [modelQuery.isError]);
 
   useEffect(() => {
     if (rowQuery.isSuccess && !rowQuery.isPlaceholderData) {
@@ -683,7 +713,7 @@ function AppContent() {
   }
 
   function selectModel(modelName: string) {
-    setSelectedModelName(modelName);
+    void navigate({ to: "/model/$modelName", params: { modelName } });
   }
 
   function refreshRows() {
@@ -766,7 +796,7 @@ function AppContent() {
   return (
     <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground shadow-tool">
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-surface/95 px-3 backdrop-blur">
-        <div className="flex min-w-0 items-center gap-2">
+        <Link to="/" className="flex min-w-0 items-center gap-2">
           <div className="flex h-7 w-7 items-center justify-center rounded-md border border-border bg-elevated shadow-sm">
             <Database className="h-4 w-4 text-primary" aria-hidden="true" />
           </div>
@@ -776,7 +806,7 @@ function AppContent() {
               read-only local database viewer
             </p>
           </div>
-        </div>
+        </Link>
         <div className="flex items-center gap-2">
           <span className="hidden items-center gap-1.5 rounded border border-border bg-elevated px-2 py-1 font-mono text-[11px] font-medium text-muted-foreground sm:inline-flex">
             <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden="true" />
@@ -856,10 +886,12 @@ function AppContent() {
             <div className="mb-2 flex min-h-8 items-center justify-between gap-3">
               <div className="min-w-0">
                 <h2 className="truncate text-sm font-semibold">
-                  {selectedModel?.name ?? "No model selected"}
+                  {!isModelRoute ? "Models" : (selectedModel?.name ?? "Model not found")}
                 </h2>
                 <p className="font-mono text-[11px] text-muted-foreground">
-                  {selectedModel
+                  {!isModelRoute
+                    ? `${models.length} ${models.length === 1 ? "model" : "models"} available`
+                    : selectedModel
                     ? formatRowSummary(
                         rowState,
                         tableFields.length,
@@ -882,7 +914,8 @@ function AppContent() {
               ) : null}
             </div>
 
-            <div className="flex flex-col gap-2">
+            {isModelRoute ? (
+              <div className="flex flex-col gap-2">
               <div className="flex flex-col gap-2 sm:flex-row">
                 <label className="relative min-w-0 flex-1">
                   <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -1021,11 +1054,93 @@ function AppContent() {
                   })}
                 </div>
               ) : null}
-            </div>
+              </div>
+            ) : null}
           </div>
 
           <div className="min-h-0 flex-1 overflow-auto">
-            {selectedModel ? (
+            {!isModelRoute ? (
+              <div className="p-3">
+                {modelState.status === "loading" ? (
+                  <div className="rounded-md border border-dashed border-border bg-panel p-6 text-center text-xs text-muted-foreground">
+                    Loading models...
+                  </div>
+                ) : modelState.status === "error" ? (
+                  <div className="rounded-md border border-dashed border-danger/70 bg-panel p-6 text-center text-xs text-muted-foreground">
+                    <p className="font-medium text-danger">Could not load models.</p>
+                    <p className="mt-1">{modelState.error}</p>
+                  </div>
+                ) : models.length === 0 ? (
+                  <div className="rounded-md border border-dashed border-border bg-panel p-6 text-center text-xs text-muted-foreground">
+                    No Prisma models found.
+                  </div>
+                ) : (
+                  <table className="w-full table-fixed border-collapse text-left text-xs">
+                    <thead className="bg-panel">
+                      <tr>
+                        <th className="border-b border-r border-border px-3 py-2 font-medium text-muted-foreground">
+                          Model
+                        </th>
+                        <th className="w-24 border-b border-r border-border px-3 py-2 font-medium text-muted-foreground">
+                          Fields
+                        </th>
+                        <th className="w-24 border-b border-r border-border px-3 py-2 font-medium text-muted-foreground">
+                          Scalars
+                        </th>
+                        <th className="w-24 border-b border-r border-border px-3 py-2 font-medium text-muted-foreground">
+                          Relations
+                        </th>
+                        <th className="w-24 border-b border-border px-3 py-2 font-medium text-muted-foreground">
+                          Enums
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {models.map((model) => {
+                        const scalarCount = model.fields.filter(
+                          (field) => field.kind === "scalar",
+                        ).length;
+                        const relationCount = model.fields.filter(
+                          (field) => field.kind === "object",
+                        ).length;
+                        const enumCount = model.fields.filter(
+                          (field) => field.kind === "enum",
+                        ).length;
+
+                        return (
+                          <tr
+                            key={model.name}
+                            className="h-10 border-b border-border transition-colors hover:bg-elevated"
+                          >
+                            <td className="border-r border-border px-3 py-1.5">
+                              <Link
+                                to="/model/$modelName"
+                                params={{ modelName: model.name }}
+                                className="block truncate font-medium text-primary hover:underline"
+                              >
+                                {model.name}
+                              </Link>
+                            </td>
+                            <td className="border-r border-border px-3 py-1.5 font-mono text-muted-foreground">
+                              {model.fields.length}
+                            </td>
+                            <td className="border-r border-border px-3 py-1.5 font-mono text-muted-foreground">
+                              {scalarCount}
+                            </td>
+                            <td className="border-r border-border px-3 py-1.5 font-mono text-muted-foreground">
+                              {relationCount}
+                            </td>
+                            <td className="px-3 py-1.5 font-mono text-muted-foreground">
+                              {enumCount}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            ) : selectedModel ? (
               <table className="w-max min-w-full border-collapse text-left text-xs">
                 <thead className="sticky top-0 z-10 bg-panel">
                   {table.getHeaderGroups().map((headerGroup) => (
@@ -1114,60 +1229,64 @@ function AppContent() {
               </table>
             ) : (
               <div className="flex h-full items-center justify-center px-3 text-center text-xs text-muted-foreground">
-                Select a model after metadata loads.
+                {modelState.status === "loading"
+                  ? "Loading models..."
+                  : `Model "${routedModelName}" was not found.`}
               </div>
             )}
           </div>
 
-          <div className="flex min-h-11 shrink-0 flex-col gap-2 border-t border-border bg-panel/80 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <span className="font-mono">Page {pagination.pageIndex + 1}</span>
-              {rowState.status === "loading" && rowState.rows.length > 0 ? (
-                <span>Loading...</span>
-              ) : null}
-            </div>
-            <div className="flex items-center gap-2">
-              <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                Rows
-                <select
-                  value={pagination.pageSize}
-                  onChange={(event) => {
-                    table.setPageSize(Number(event.target.value));
-                    table.setPageIndex(0);
-                  }}
-                  disabled={!selectedModel}
-                  aria-label="Rows per page"
-                  className="h-8 rounded-md border border-input bg-elevated px-2 text-xs text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring disabled:opacity-50"
+          {isModelRoute ? (
+            <div className="flex min-h-11 shrink-0 flex-col gap-2 border-t border-border bg-panel/80 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="font-mono">Page {pagination.pageIndex + 1}</span>
+                {rowState.status === "loading" && rowState.rows.length > 0 ? (
+                  <span>Loading...</span>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  Rows
+                  <select
+                    value={pagination.pageSize}
+                    onChange={(event) => {
+                      table.setPageSize(Number(event.target.value));
+                      table.setPageIndex(0);
+                    }}
+                    disabled={!selectedModel}
+                    aria-label="Rows per page"
+                    className="h-8 rounded-md border border-input bg-elevated px-2 text-xs text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring disabled:opacity-50"
+                  >
+                    {TABLE_PAGE_SIZE_OPTIONS.map((pageSize) => (
+                      <option key={pageSize} value={pageSize}>
+                        {pageSize}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => table.previousPage()}
+                  disabled={!selectedModel || !canGoToPreviousPage}
+                  aria-label="Previous page"
                 >
-                  {TABLE_PAGE_SIZE_OPTIONS.map((pageSize) => (
-                    <option key={pageSize} value={pageSize}>
-                      {pageSize}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                onClick={() => table.previousPage()}
-                disabled={!selectedModel || !canGoToPreviousPage}
-                aria-label="Previous page"
-              >
-                <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                onClick={() => table.nextPage()}
-                disabled={!selectedModel || !canGoToNextPage}
-                aria-label="Next page"
-              >
-                <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
-              </Button>
+                  <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => table.nextPage()}
+                  disabled={!selectedModel || !canGoToNextPage}
+                  aria-label="Next page"
+                >
+                  <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+                </Button>
+              </div>
             </div>
-          </div>
+          ) : null}
         </section>
 
         <aside className="flex min-h-0 flex-col bg-panel">

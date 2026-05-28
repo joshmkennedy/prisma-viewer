@@ -131,7 +131,7 @@ describe("fixture Prisma app integration", () => {
         "name",
       ]);
 
-      render(<App />);
+      renderApp();
 
       await userEvent.click(
         await screen.findByRole("button", { name: "User model, 5 fields" }),
@@ -192,4 +192,10 @@ function closeHttpServer(server: Server) {
       else resolve();
     });
   });
+}
+
+function renderApp(path = "/") {
+  vi.stubGlobal("scrollTo", vi.fn());
+  window.history.replaceState(null, "", path);
+  return render(<App />);
 }

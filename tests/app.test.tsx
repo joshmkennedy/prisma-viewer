@@ -36,7 +36,7 @@ describe("App model sidebar", () => {
       },
     });
 
-    render(<App />);
+    renderApp();
 
     expect(await screen.findByRole("button", { name: "User model, 2 fields" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "AuditLog model, 3 fields" })).toBeTruthy();
@@ -45,6 +45,26 @@ describe("App model sidebar", () => {
     ).toBe("true");
     expect(await screen.findByText("1 row loaded, 2 columns shown")).toBeTruthy();
     expect(screen.getByText("email")).toBeTruthy();
+  });
+
+  it("renders the index route as a table of all models", async () => {
+    mockApiResponses({
+      models: [
+        model("User", ["id", "email"]),
+        model("AuditLog", ["id", "action", "payload"]),
+      ],
+      rowsByModel: {
+        User: [],
+        AuditLog: [],
+      },
+    });
+
+    renderApp("/");
+
+    expect(await screen.findByRole("heading", { name: "Models" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "User" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "AuditLog" })).toBeTruthy();
+    expect(screen.queryByText("No rows found for this model.")).toBeNull();
   });
 
   it("updates the selected model when a model is clicked", async () => {
@@ -59,7 +79,7 @@ describe("App model sidebar", () => {
       },
     });
 
-    render(<App />);
+    renderApp();
 
     const projectButton = await screen.findByRole("button", {
       name: "Project model, 3 fields",
@@ -74,18 +94,18 @@ describe("App model sidebar", () => {
 
   it("renders loading, empty, and error states clearly", async () => {
     mockPendingModelsResponse();
-    const { unmount } = render(<App />);
-    expect(screen.getByText("Loading models...")).toBeTruthy();
+    const { unmount } = renderApp();
+    expect(screen.getAllByText("Loading models...").length).toBeGreaterThan(0);
     unmount();
 
     mockApiResponses({ models: [], rowsByModel: {} });
-    render(<App />);
-    expect(await screen.findByText("No Prisma models found.")).toBeTruthy();
+    renderApp();
+    expect((await screen.findAllByText("No Prisma models found.")).length).toBeGreaterThan(0);
     cleanup();
 
     mockRejectedModelsResponse(new Error("metadata unavailable"));
-    render(<App />);
-    expect(await screen.findByText("Could not load models.")).toBeTruthy();
+    renderApp();
+    expect((await screen.findAllByText("Could not load models.")).length).toBeGreaterThan(0);
     expect(screen.getByText("metadata unavailable")).toBeTruthy();
   });
 });
@@ -125,7 +145,7 @@ describe("App row table", () => {
       },
     });
 
-    render(<App />);
+    renderApp();
 
     expect(await screen.findByText("1 row loaded, 5 columns shown")).toBeTruthy();
     expect(screen.getByText("avery.long.email.address@example.com")).toBeTruthy();
@@ -143,7 +163,7 @@ describe("App row table", () => {
       models: [model("User", ["id"])],
       rowsByModel: { User: "pending" },
     });
-    const { unmount } = render(<App />);
+    const { unmount } = renderApp();
     expect(await screen.findByText("Loading rows...")).toBeTruthy();
     unmount();
 
@@ -151,7 +171,7 @@ describe("App row table", () => {
       models: [model("User", ["id"])],
       rowsByModel: { User: [] },
     });
-    render(<App />);
+    renderApp();
     expect(await screen.findByText("No rows found for this model.")).toBeTruthy();
     cleanup();
 
@@ -159,7 +179,7 @@ describe("App row table", () => {
       models: [model("User", ["id"])],
       rowsByModel: { User: new Error("database disconnected") },
     });
-    render(<App />);
+    renderApp();
     expect(await screen.findByText("Could not load rows.")).toBeTruthy();
     expect(screen.getByText("database disconnected")).toBeTruthy();
   });
@@ -193,7 +213,7 @@ describe("App row table", () => {
       }),
     );
 
-    render(<App />);
+    renderApp();
 
     expect(await screen.findByText("Could not load rows.")).toBeTruthy();
     expect(
@@ -228,7 +248,7 @@ describe("App row table", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
 
     expect(await screen.findByText("ada@example.com")).toBeTruthy();
     expect(screen.getByText("Read-only")).toBeTruthy();
@@ -313,7 +333,7 @@ describe("App row table", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
 
     expect(await screen.findByText("user100@example.com")).toBeTruthy();
     expect(screen.getByText("Page 1")).toBeTruthy();
@@ -354,7 +374,7 @@ describe("App row table", () => {
       },
     });
 
-    render(<App />);
+    renderApp();
 
     expect(
       screen.getByText("Select a table row to inspect the full record."),
@@ -383,7 +403,7 @@ describe("App row table", () => {
       },
     });
 
-    render(<App />);
+    renderApp();
 
     await screen.findByText("ada@example.com");
     await userEvent.type(screen.getByLabelText("Search table rows"), "grace");
@@ -429,7 +449,7 @@ describe("App row table", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
 
     await screen.findByText("ada@example.com");
     const searchInput = screen.getByLabelText("Search table rows");
@@ -456,7 +476,7 @@ describe("App row table", () => {
       },
     });
 
-    render(<App />);
+    renderApp();
 
     await screen.findByText("ada@example.com");
     await userEvent.click(screen.getByRole("button", { name: "Add table filter" }));
@@ -499,7 +519,7 @@ describe("App row table", () => {
       },
     });
 
-    render(<App />);
+    renderApp();
 
     await screen.findByText("ada@example.com");
     await userEvent.click(screen.getByRole("button", { name: "Add table filter" }));
@@ -552,7 +572,7 @@ describe("App row table", () => {
       },
     });
 
-    render(<App />);
+    renderApp();
 
     await screen.findByText("user_1");
     await userEvent.click(screen.getByRole("button", { name: "Add table filter" }));
@@ -613,7 +633,7 @@ describe("App row table", () => {
       },
     });
 
-    render(<App />);
+    renderApp("/model/AdminProfile");
 
     await screen.findByText("admin_profile_1");
     await userEvent.click(screen.getByRole("button", { name: "Add table filter" }));
@@ -655,7 +675,7 @@ describe("App row table", () => {
       },
     });
 
-    render(<App />);
+    renderApp();
 
     await screen.findByText("ada@example.com");
     await userEvent.type(screen.getByLabelText("Search table rows"), "grace");
@@ -704,7 +724,7 @@ describe("App row table", () => {
       },
     });
 
-    render(<App />);
+    renderApp("/model/AuditLog");
 
     await userEvent.click(await screen.findByText("log_1"));
 
@@ -755,7 +775,7 @@ describe("App row table", () => {
       },
     });
 
-    render(<App />);
+    renderApp("/model/AuditLog");
 
     await userEvent.click(await screen.findByText("log_1"));
 
@@ -866,4 +886,10 @@ function mockRejectedModelsResponse(error: Error) {
     throw error;
   });
   vi.stubGlobal("fetch", fetchMock);
+}
+
+function renderApp(path = "/model/User") {
+  vi.stubGlobal("scrollTo", vi.fn());
+  window.history.replaceState(null, "", path);
+  return render(<App />);
 }
