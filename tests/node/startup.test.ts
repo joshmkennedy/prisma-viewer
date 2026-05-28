@@ -24,7 +24,7 @@ afterEach(() => {
 
 describe("parseArgs", () => {
   it("keeps the target app root optional so startup defaults to cwd", () => {
-    expect(parseArgs([])).toEqual({ help: false });
+    expect(parseArgs([])).toEqual({ help: false, open: true });
   });
 
   it("accepts positional root, host, and port", () => {
@@ -32,8 +32,13 @@ describe("parseArgs", () => {
       appRoot: "../app",
       help: false,
       host: "localhost",
+      open: true,
       port: 5555,
     });
+  });
+
+  it("can disable browser opening for scripts and CI", () => {
+    expect(parseArgs(["--no-open"])).toEqual({ help: false, open: false });
   });
 });
 
@@ -55,13 +60,24 @@ describe("prepareStartup", () => {
     expect(context.prismaClientPath).toContain("@prisma/client");
   });
 
-  it("reports missing env files clearly", () => {
+  it("uses shell-provided DATABASE_URL when env files are absent", () => {
+    originalDatabaseUrl = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "postgres://shell";
+    const appRoot = makeTempApp({ prisma: true, prismaClient: true });
+
+    const context = prepareStartup({ cwd: appRoot });
+
+    expect(context.databaseUrl).toBe("postgres://shell");
+    expect(context.loadedEnvFiles).toEqual([]);
+  });
+
+  it("reports missing database configuration clearly when env files are absent", () => {
     originalDatabaseUrl = process.env.DATABASE_URL;
     delete process.env.DATABASE_URL;
     const appRoot = makeTempApp({ prisma: true, prismaClient: true });
 
     expect(() => prepareStartup({ cwd: appRoot })).toThrow(
-      /No environment file found.*Add \.env\.local or \.env with DATABASE_URL/,
+      /Database configuration is missing.*Set DATABASE_URL.*\.env\.local or \.env/,
     );
   });
 

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createServer, type ViteDevServer } from "vite";
+import { createServer, type Plugin, type ViteDevServer } from "vite";
 import { createPrismaApiMiddleware } from "./api.js";
 import { createTargetPrismaRuntime, type PrismaRuntime } from "./prisma.js";
 import type { StartupContext } from "./startup.js";
@@ -27,12 +27,14 @@ export async function startViewerServer(
   const prismaRuntime = await (options.createPrismaRuntimeImpl ?? createTargetPrismaRuntime)(
     context,
   );
+  const apiMiddleware = createPrismaApiMiddleware(prismaRuntime);
   let server: ViteDevServer | undefined;
 
   try {
     server = await (options.createServerImpl ?? createServer)({
       root: viewerRoot,
       configFile: join(viewerRoot, "vite.config.ts"),
+      plugins: [prismaApiPlugin(apiMiddleware)],
       server: {
         host: options.host ?? "127.0.0.1",
         port: options.port ?? 0,
@@ -42,7 +44,6 @@ export async function startViewerServer(
       },
     });
 
-    server.middlewares.use(createPrismaApiMiddleware(prismaRuntime));
     bindPrismaLifecycle(server, prismaRuntime);
     await server.listen();
   } catch (error) {
@@ -57,6 +58,17 @@ export async function startViewerServer(
   return {
     server,
     url: `http://${host}:${port ?? 5173}/`,
+  };
+}
+
+function prismaApiPlugin(
+  middleware: ReturnType<typeof createPrismaApiMiddleware>,
+): Plugin {
+  return {
+    name: "prisma-viewer-api",
+    configureServer(server) {
+      server.middlewares.use(middleware);
+    },
   };
 }
 

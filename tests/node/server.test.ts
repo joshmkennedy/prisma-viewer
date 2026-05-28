@@ -29,6 +29,9 @@ describe("startViewerServer", () => {
       viewerRoot: "/viewer",
       createServerImpl: (async (config: unknown) => {
         calls.push(config);
+        const plugins = (config as { plugins?: { configureServer?: (server: unknown) => void }[] })
+          .plugins;
+        plugins?.forEach((plugin) => plugin.configureServer?.(fakeServer));
         return fakeServer;
       }) as never,
       createPrismaRuntimeImpl: async () => ({
@@ -115,6 +118,7 @@ describe("createPrismaApiMiddleware", () => {
               name: "id",
               kind: "scalar",
               type: "String",
+              enumValues: [],
               isList: false,
               isRequired: true,
               isUnique: false,
@@ -281,6 +285,209 @@ describe("createPrismaApiMiddleware", () => {
     expect(JSON.parse(response.body)).toMatchObject({
       rows: [],
       pagination: { page: 3, pageSize: 25 },
+    });
+  });
+
+  it("applies validated sorting to row queries", async () => {
+    const calls: unknown[] = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [
+                field({ name: "id", type: "String", isId: true }),
+                field({ name: "email", type: "String" }),
+                field({ name: "posts", kind: "object", type: "Post", isList: true }),
+              ],
+            },
+          },
+        },
+        user: {
+          findMany: async (args: unknown) => {
+            calls.push(args);
+            return [{ id: "user_1", email: "ada@example.com" }];
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+    const searchParams = new URLSearchParams({
+      sort: JSON.stringify([{ field: "email", direction: "desc" }]),
+    });
+
+    const response = await runMiddleware(middleware, {
+      method: "GET",
+      url: `/api/models/User/rows?${searchParams.toString()}`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(calls).toEqual([
+      {
+        skip: 0,
+        take: 50,
+        select: { id: true, email: true },
+        orderBy: [{ email: "desc" }],
+      },
+    ]);
+  });
+
+  it("applies read-only search and filter criteria to row queries", async () => {
+    const calls: unknown[] = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [
+                field({ name: "id", type: "String", isId: true }),
+                field({ name: "email", type: "String" }),
+                field({ name: "age", type: "Int" }),
+              ],
+            },
+          },
+        },
+        user: {
+          findMany: async (args: unknown) => {
+            calls.push(args);
+            return [{ id: "user_1", email: "ada@example.com", age: 37 }];
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+    const searchParams = new URLSearchParams({
+      search: "ada",
+      filters: JSON.stringify([
+        { field: "email", operator: "endsWith", value: "example.com" },
+        { field: "age", operator: "equals", value: "37" },
+      ]),
+    });
+
+    const response = await runMiddleware(middleware, {
+      method: "GET",
+      url: `/api/models/User/rows?${searchParams.toString()}`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(calls).toEqual([
+      {
+        skip: 0,
+        take: 50,
+        select: { id: true, email: true, age: true },
+        where: {
+          AND: [
+            {
+              OR: [
+                { id: { contains: "ada" } },
+                { email: { contains: "ada" } },
+              ],
+            },
+            { email: { endsWith: "example.com" } },
+            { age: 37 },
+          ],
+        },
+      },
+    ]);
+    expect(JSON.parse(response.body)).toMatchObject({
+      rows: [{ id: "user_1", email: "ada@example.com", age: 37 }],
+      pagination: { filtersApplied: true },
+    });
+  });
+
+  it("uses Prisma enum values when applying enum filters", async () => {
+    const calls: unknown[] = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [
+                field({ name: "id", type: "String", isId: true }),
+                field({ name: "role", kind: "enum", type: "Role" }),
+              ],
+            },
+          },
+          enums: {
+            Role: {
+              values: ["ADMIN", "MEMBER"],
+            },
+          },
+        },
+        user: {
+          findMany: async (args: unknown) => {
+            calls.push(args);
+            return [{ id: "user_1", role: "ADMIN" }];
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+    const searchParams = new URLSearchParams({
+      filters: JSON.stringify([{ field: "role", operator: "equals", value: "ADMIN" }]),
+    });
+
+    const response = await runMiddleware(middleware, {
+      method: "GET",
+      url: `/api/models/User/rows?${searchParams.toString()}`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(calls).toEqual([
+      {
+        skip: 0,
+        take: 50,
+        select: { id: true, role: true },
+        where: { role: "ADMIN" },
+      },
+    ]);
+  });
+
+  it("rejects enum filters that are not actual Prisma enum values", async () => {
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [
+                field({ name: "id", type: "String", isId: true }),
+                field({ name: "role", kind: "enum", type: "Role" }),
+              ],
+            },
+          },
+          enums: {
+            Role: {
+              values: ["ADMIN", "MEMBER"],
+            },
+          },
+        },
+        user: {
+          findMany: async () => {
+            throw new Error("should not query");
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+    const searchParams = new URLSearchParams({
+      filters: JSON.stringify([{ field: "role", operator: "equals", value: "admin" }]),
+    });
+
+    const response = await runMiddleware(middleware, {
+      method: "GET",
+      url: `/api/models/User/rows?${searchParams.toString()}`,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body)).toMatchObject({
+      error: {
+        code: "INVALID_FILTER",
+        message: "Invalid value for role: expected one of ADMIN, MEMBER.",
+      },
     });
   });
 

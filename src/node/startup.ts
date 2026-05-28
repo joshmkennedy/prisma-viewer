@@ -28,9 +28,11 @@ export function prepareStartup(options: StartupOptions = {}): StartupContext {
   const databaseUrl = process.env.DATABASE_URL ?? env.DATABASE_URL;
 
   if (loadedFiles.length === 0) {
-    throw new StartupError(
-      `No environment file found in ${appRoot}. Add .env.local or .env with DATABASE_URL before starting Prisma Viewer.`,
-    );
+    if (!databaseUrl) {
+      throw new StartupError(
+        `Database configuration is missing. Set DATABASE_URL in the shell environment, or add .env.local or .env to ${appRoot} before starting Prisma Viewer.`,
+      );
+    }
   }
 
   if (!databaseUrl) {

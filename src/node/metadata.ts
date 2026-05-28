@@ -2,6 +2,7 @@ export type PrismaFieldMetadata = {
   name: string;
   kind: "scalar" | "object" | "enum" | "unsupported";
   type: string;
+  enumValues: string[];
   isList: boolean;
   isRequired: boolean;
   isUnique: boolean;
@@ -24,6 +25,11 @@ type RuntimeModel = {
   fields?: unknown;
 };
 
+type RuntimeEnum = {
+  name?: unknown;
+  values?: unknown;
+};
+
 type RuntimeField = {
   name?: unknown;
   kind?: unknown;
@@ -44,28 +50,45 @@ export class MetadataError extends Error {
 }
 
 export function discoverPrismaMetadata(client: unknown): PrismaMetadata {
-  const models = findRuntimeModels(client);
+  const metadata = findRuntimeMetadata(client);
 
-  if (!models) {
+  if (!metadata) {
     throw new MetadataError(
       "Could not discover Prisma model metadata from the generated Prisma Client.",
     );
   }
 
   return {
-    models: models
-      .map(normalizeModel)
+    models: metadata.models
+      .map((model) => normalizeModel(model, metadata.enumsByName))
       .sort((left, right) => left.name.localeCompare(right.name)),
   };
 }
 
-function findRuntimeModels(client: unknown): RuntimeModel[] | undefined {
+function findRuntimeMetadata(
+  client: unknown,
+): { models: RuntimeModel[]; enumsByName: Map<string, string[]> } | undefined {
   const runtimeDataModel = readObjectPath(client, ["_runtimeDataModel", "models"]);
   const runtimeModels = modelsFromUnknown(runtimeDataModel);
-  if (runtimeModels) return runtimeModels;
+  if (runtimeModels) {
+    return {
+      models: runtimeModels,
+      enumsByName: enumsByNameFromUnknown(
+        readObjectPath(client, ["_runtimeDataModel", "enums"]),
+      ),
+    };
+  }
 
   const dmmfModels = readObjectPath(client, ["_dmmf", "datamodel", "models"]);
-  return modelsFromUnknown(dmmfModels);
+  const models = modelsFromUnknown(dmmfModels);
+  if (!models) return undefined;
+
+  return {
+    models,
+    enumsByName: enumsByNameFromUnknown(
+      readObjectPath(client, ["_dmmf", "datamodel", "enums"]),
+    ),
+  };
 }
 
 function modelsFromUnknown(value: unknown): RuntimeModel[] | undefined {
@@ -84,7 +107,55 @@ function modelsFromUnknown(value: unknown): RuntimeModel[] | undefined {
   return undefined;
 }
 
-function normalizeModel(model: RuntimeModel): PrismaModelMetadata {
+function enumsByNameFromUnknown(value: unknown) {
+  const enums = enumsFromUnknown(value);
+  const enumsByName = new Map<string, string[]>();
+  for (const item of enums) {
+    if (typeof item.name !== "string" || item.name.length === 0) continue;
+    enumsByName.set(item.name, normalizeEnumValues(item.values));
+  }
+  return enumsByName;
+}
+
+function enumsFromUnknown(value: unknown): RuntimeEnum[] {
+  if (Array.isArray(value)) return value as RuntimeEnum[];
+
+  if (isRecord(value)) {
+    return Object.entries(value).map(([enumName, enumValue]) => {
+      if (Array.isArray(enumValue)) {
+        return { name: enumName, values: enumValue };
+      }
+
+      if (!isRecord(enumValue)) {
+        return { name: enumName, values: enumValue };
+      }
+
+      return {
+        ...enumValue,
+        name: typeof enumValue.name === "string" ? enumValue.name : enumName,
+      } as RuntimeEnum;
+    });
+  }
+
+  return [];
+}
+
+function normalizeEnumValues(value: unknown) {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((item) => {
+    if (typeof item === "string" && item.length > 0) return [item];
+    if (isRecord(item) && typeof item.name === "string" && item.name.length > 0) {
+      return [item.name];
+    }
+    return [];
+  });
+}
+
+function normalizeModel(
+  model: RuntimeModel,
+  enumsByName: Map<string, string[]>,
+): PrismaModelMetadata {
   if (typeof model.name !== "string" || model.name.length === 0) {
     throw new MetadataError("Prisma metadata contained a model without a valid name.");
   }
@@ -97,11 +168,15 @@ function normalizeModel(model: RuntimeModel): PrismaModelMetadata {
 
   return {
     name: modelName,
-    fields: model.fields.map((field) => normalizeField(modelName, field)),
+    fields: model.fields.map((field) => normalizeField(modelName, field, enumsByName)),
   };
 }
 
-function normalizeField(modelName: string, field: unknown): PrismaFieldMetadata {
+function normalizeField(
+  modelName: string,
+  field: unknown,
+  enumsByName: Map<string, string[]>,
+): PrismaFieldMetadata {
   if (!isRecord(field)) {
     throw new MetadataError(
       `Prisma metadata for model ${modelName} contained an invalid field.`,
@@ -122,10 +197,13 @@ function normalizeField(modelName: string, field: unknown): PrismaFieldMetadata 
     );
   }
 
+  const kind = normalizeKind(modelName, runtimeField);
+
   return {
     name: runtimeField.name,
-    kind: normalizeKind(modelName, runtimeField),
+    kind,
     type: runtimeField.type,
+    enumValues: kind === "enum" ? (enumsByName.get(runtimeField.type) ?? []) : [],
     isList: runtimeField.isList === true,
     isRequired: runtimeField.isRequired === true,
     isUnique: runtimeField.isUnique === true,

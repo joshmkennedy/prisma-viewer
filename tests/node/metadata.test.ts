@@ -40,6 +40,7 @@ describe("discoverPrismaMetadata", () => {
               name: "id",
               kind: "scalar",
               type: "Int",
+              enumValues: [],
               isList: false,
               isRequired: true,
               isUnique: false,
@@ -51,6 +52,7 @@ describe("discoverPrismaMetadata", () => {
               name: "title",
               kind: "scalar",
               type: "String",
+              enumValues: [],
               isList: false,
               isRequired: true,
               isUnique: false,
@@ -62,6 +64,7 @@ describe("discoverPrismaMetadata", () => {
               name: "author",
               kind: "object",
               type: "User",
+              enumValues: [],
               isList: false,
               isRequired: true,
               isUnique: false,
@@ -78,6 +81,7 @@ describe("discoverPrismaMetadata", () => {
               name: "id",
               kind: "scalar",
               type: "String",
+              enumValues: [],
               isList: false,
               isRequired: true,
               isUnique: false,
@@ -89,6 +93,7 @@ describe("discoverPrismaMetadata", () => {
               name: "email",
               kind: "scalar",
               type: "String",
+              enumValues: [],
               isList: false,
               isRequired: true,
               isUnique: true,
@@ -100,6 +105,7 @@ describe("discoverPrismaMetadata", () => {
               name: "posts",
               kind: "object",
               type: "Post",
+              enumValues: [],
               isList: true,
               isRequired: true,
               isUnique: false,
@@ -110,6 +116,32 @@ describe("discoverPrismaMetadata", () => {
           ],
         },
       ],
+    });
+  });
+
+  it("attaches Prisma enum values to enum fields", () => {
+    const metadata = discoverPrismaMetadata({
+      _runtimeDataModel: {
+        models: {
+          User: {
+            name: "User",
+            fields: [
+              field({ name: "id", type: "String" }),
+              field({ name: "role", kind: "enum", type: "Role" }),
+            ],
+          },
+        },
+        enums: {
+          Role: ["ADMIN", "MEMBER"],
+        },
+      },
+    });
+
+    expect(metadata.models[0]?.fields[1]).toMatchObject({
+      name: "role",
+      kind: "enum",
+      type: "Role",
+      enumValues: ["ADMIN", "MEMBER"],
     });
   });
 
@@ -135,6 +167,7 @@ describe("discoverPrismaMetadata", () => {
             name: "id",
             kind: "scalar",
             type: "Int",
+            enumValues: [],
             isList: false,
             isRequired: true,
             isUnique: false,
@@ -146,6 +179,7 @@ describe("discoverPrismaMetadata", () => {
             name: "email",
             kind: "scalar",
             type: "String",
+            enumValues: [],
             isList: false,
             isRequired: true,
             isUnique: true,
@@ -183,6 +217,7 @@ describe("discoverPrismaMetadata", () => {
             name: "id",
             kind: "scalar",
             type: "String",
+            enumValues: [],
             isList: false,
             isRequired: true,
             isUnique: false,
@@ -194,6 +229,7 @@ describe("discoverPrismaMetadata", () => {
             name: "expiresAt",
             kind: "scalar",
             type: "DateTime",
+            enumValues: [],
             isList: false,
             isRequired: false,
             isUnique: false,
