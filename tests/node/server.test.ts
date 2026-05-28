@@ -446,6 +446,106 @@ describe("createPrismaApiMiddleware", () => {
     ]);
   });
 
+  it("uses Prisma list filters when applying enum list filters", async () => {
+    const calls: unknown[] = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            AdminProfile: {
+              name: "AdminProfile",
+              fields: [
+                field({ name: "id", type: "String", isId: true }),
+                field({ name: "roles", kind: "enum", type: "AdminRole", isList: true }),
+              ],
+            },
+          },
+          enums: {
+            AdminRole: {
+              values: ["SYSTEM_ADMIN", "SUPPORT_ADMIN"],
+            },
+          },
+        },
+        adminProfile: {
+          findMany: async (args: unknown) => {
+            calls.push(args);
+            return [{ id: "admin_profile_1", roles: ["SYSTEM_ADMIN"] }];
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+    const searchParams = new URLSearchParams({
+      filters: JSON.stringify([
+        { field: "roles", operator: "equals", value: "SYSTEM_ADMIN" },
+      ]),
+    });
+
+    const response = await runMiddleware(middleware, {
+      method: "GET",
+      url: `/api/models/AdminProfile/rows?${searchParams.toString()}`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(calls).toEqual([
+      {
+        skip: 0,
+        take: 50,
+        select: { id: true, roles: true },
+        where: { roles: { has: "SYSTEM_ADMIN" } },
+      },
+    ]);
+  });
+
+  it("uses Prisma empty list filters for list fields", async () => {
+    const calls: unknown[] = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            AdminProfile: {
+              name: "AdminProfile",
+              fields: [
+                field({ name: "id", type: "String", isId: true }),
+                field({ name: "roles", kind: "enum", type: "AdminRole", isList: true }),
+              ],
+            },
+          },
+          enums: {
+            AdminRole: {
+              values: ["SYSTEM_ADMIN", "SUPPORT_ADMIN"],
+            },
+          },
+        },
+        adminProfile: {
+          findMany: async (args: unknown) => {
+            calls.push(args);
+            return [];
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+    const searchParams = new URLSearchParams({
+      filters: JSON.stringify([{ field: "roles", operator: "notEmpty" }]),
+    });
+
+    const response = await runMiddleware(middleware, {
+      method: "GET",
+      url: `/api/models/AdminProfile/rows?${searchParams.toString()}`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(calls).toEqual([
+      {
+        skip: 0,
+        take: 50,
+        select: { id: true, roles: true },
+        where: { roles: { isEmpty: false } },
+      },
+    ]);
+  });
+
   it("rejects enum filters that are not actual Prisma enum values", async () => {
     const middleware = createPrismaApiMiddleware({
       client: {

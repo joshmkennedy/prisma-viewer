@@ -309,6 +309,10 @@ function buildFieldFilter(
   filter: RowFilter,
 ): { where: Record<string, unknown> } | { error: string } {
   if (filter.operator === "empty") {
+    if (field.isList) {
+      return { where: { [field.name]: { isEmpty: true } } };
+    }
+
     if (field.type === "String") {
       return field.isRequired
         ? { where: { [field.name]: "" } }
@@ -320,6 +324,10 @@ function buildFieldFilter(
   }
 
   if (filter.operator === "notEmpty") {
+    if (field.isList) {
+      return { where: { [field.name]: { isEmpty: false } } };
+    }
+
     if (field.type === "String") {
       const clauses: Record<string, unknown>[] = [{ [field.name]: { not: "" } }];
       if (!field.isRequired) clauses.push({ [field.name]: { not: null } });
@@ -342,7 +350,11 @@ function buildFieldFilter(
         error: `Invalid value for ${field.name}: expected one of ${field.enumValues.join(", ")}.`,
       };
     }
-    return { where: { [field.name]: value } };
+    return {
+      where: {
+        [field.name]: field.isList ? { has: value } : value,
+      },
+    };
   }
 
   if (field.type === "String") {

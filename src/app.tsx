@@ -259,6 +259,7 @@ function normalizeSearchValue(value: unknown) {
 }
 
 function isEmptyValue(value: unknown) {
+  if (Array.isArray(value)) return value.length === 0;
   return value === null || value === undefined || value === "";
 }
 
@@ -269,6 +270,18 @@ function rowMatchesFilter(row: Record<string, unknown>, filter: TableFilter) {
 
   const query = filter.value.trim().toLowerCase();
   if (!query) return true;
+
+  if (Array.isArray(rawValue)) {
+    const values = rawValue.map((item) => normalizeSearchValue(item));
+    if (filter.operator === "equals") return values.includes(query);
+    if (filter.operator === "startsWith") {
+      return values.some((value) => value.startsWith(query));
+    }
+    if (filter.operator === "endsWith") {
+      return values.some((value) => value.endsWith(query));
+    }
+    return values.some((value) => value.includes(query));
+  }
 
   const value = normalizeSearchValue(rawValue);
   if (filter.operator === "equals") return value === query;
@@ -751,7 +764,7 @@ function AppContent() {
   }
 
   return (
-    <main className="flex min-h-screen flex-col bg-background text-foreground shadow-tool">
+    <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground shadow-tool">
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-surface/95 px-3 backdrop-blur">
         <div className="flex min-w-0 items-center gap-2">
           <div className="flex h-7 w-7 items-center justify-center rounded-md border border-border bg-elevated shadow-sm">
@@ -785,8 +798,8 @@ function AppContent() {
       </header>
 
       <section className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden border-t border-border/70 lg:grid-cols-[240px_minmax(460px,1fr)_360px]">
-        <aside className="min-h-0 border-b border-border bg-panel lg:border-b-0 lg:border-r">
-          <div className="border-b border-border bg-surface/60 p-3">
+        <aside className="flex min-h-0 flex-col border-b border-border bg-panel lg:border-b-0 lg:border-r">
+          <div className="shrink-0 border-b border-border bg-surface/60 p-3">
             <label className="relative block">
               <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <input
@@ -797,7 +810,7 @@ function AppContent() {
               />
             </label>
           </div>
-          <nav className="max-h-52 overflow-auto p-2 lg:max-h-none">
+          <nav className="min-h-0 flex-1 max-h-52 overflow-auto p-2 lg:max-h-none">
             {modelState.status === "loading" ? (
               <div className="rounded-md border border-dashed border-border bg-surface p-3 text-xs text-muted-foreground">
                 Loading models...
@@ -838,8 +851,8 @@ function AppContent() {
           </nav>
         </aside>
 
-        <section className="min-w-0 overflow-hidden border-b border-border bg-surface lg:border-b-0 lg:border-r">
-          <div className="border-b border-border bg-panel/80 px-3 py-2">
+        <section className="flex min-h-0 min-w-0 flex-col overflow-hidden border-b border-border bg-surface lg:border-b-0 lg:border-r">
+          <div className="shrink-0 border-b border-border bg-panel/80 px-3 py-2">
             <div className="mb-2 flex min-h-8 items-center justify-between gap-3">
               <div className="min-w-0">
                 <h2 className="truncate text-sm font-semibold">
@@ -1011,16 +1024,16 @@ function AppContent() {
             </div>
           </div>
 
-          <div className="h-[45vh] overflow-auto lg:h-[calc(100vh-12.5rem)]">
+          <div className="min-h-0 flex-1 overflow-auto">
             {selectedModel ? (
-              <table className="min-w-[720px] border-collapse text-left text-xs">
+              <table className="w-max min-w-full border-collapse text-left text-xs">
                 <thead className="sticky top-0 z-10 bg-panel">
                   {table.getHeaderGroups().map((headerGroup) => (
                     <tr key={headerGroup.id}>
                       {headerGroup.headers.map((header) => (
                         <th
                           key={header.id}
-                          className="w-44 max-w-44 border-b border-r border-border px-3 py-2 font-medium text-muted-foreground last:border-r-0"
+                          className="min-w-[150px] border-b border-r border-border px-3 py-2 font-medium text-muted-foreground last:border-r-0"
                         >
                           {header.isPlaceholder
                             ? null
@@ -1089,7 +1102,7 @@ function AppContent() {
                         {tableRow.getVisibleCells().map((cell) => (
                           <td
                             key={cell.id}
-                            className="w-44 max-w-44 border-r border-border px-3 py-1.5 last:border-r-0"
+                            className="min-w-[150px] border-r border-border px-3 py-1.5 last:border-r-0"
                           >
                             {flexRender(cell.column.columnDef.cell, cell.getContext())}
                           </td>
@@ -1106,7 +1119,7 @@ function AppContent() {
             )}
           </div>
 
-          <div className="flex min-h-11 flex-col gap-2 border-t border-border bg-panel/80 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-h-11 shrink-0 flex-col gap-2 border-t border-border bg-panel/80 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <span className="font-mono">Page {pagination.pageIndex + 1}</span>
               {rowState.status === "loading" && rowState.rows.length > 0 ? (
@@ -1157,8 +1170,8 @@ function AppContent() {
           </div>
         </section>
 
-        <aside className="min-h-0 bg-panel">
-          <div className="flex h-11 items-center justify-between border-b border-border bg-surface/70 px-3">
+        <aside className="flex min-h-0 flex-col bg-panel">
+          <div className="flex h-11 shrink-0 items-center justify-between border-b border-border bg-surface/70 px-3">
             <div className="flex min-w-0 items-center gap-2">
               <TableProperties className="h-4 w-4 text-primary" />
               <h2 className="truncate text-sm font-semibold">Record Preview</h2>
@@ -1166,7 +1179,7 @@ function AppContent() {
             <ChevronDown className="h-4 w-4 text-muted-foreground" />
           </div>
 
-          <div className="p-3">
+          <div className="min-h-0 flex-1 overflow-auto p-3">
             {selectedRow ? (
               <>
                 <Tabs value={previewMode} onValueChange={updatePreviewMode}>
@@ -1192,7 +1205,7 @@ function AppContent() {
                 </Tabs>
 
                 {previewMode === "fields" ? (
-                  <dl className="max-h-[34rem] overflow-auto rounded-md border border-border bg-surface">
+                  <dl className="max-h-full overflow-auto rounded-md border border-border bg-surface">
                     {tableFields.map((field) => (
                       <div
                         key={field.name}
@@ -1224,7 +1237,7 @@ function AppContent() {
                 ) : (
                   <pre
                     aria-label="Selected record JSON preview"
-                    className="max-h-[34rem] max-w-full overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-surface p-3 font-mono text-[11px] leading-5 text-code"
+                    className="max-h-full max-w-full overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-surface p-3 font-mono text-[11px] leading-5 text-code"
                   >
                     {formatJsonPreview(selectedRow)}
                   </pre>

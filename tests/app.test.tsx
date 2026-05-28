@@ -590,6 +590,60 @@ describe("App row table", () => {
     });
   });
 
+  it("keeps rows returned by enum list filters visible after local filtering", async () => {
+    const fetchMock = mockApiResponses({
+      models: [
+        {
+          ...model("AdminProfile", ["id", "roles"]),
+          fields: [
+            field("id", "String"),
+            {
+              ...field("roles", "AdminRole", "enum"),
+              enumValues: ["SYSTEM_ADMIN", "SUPPORT_ADMIN"],
+              isList: true,
+            },
+          ],
+        },
+      ],
+      rowsByModel: {
+        AdminProfile: [
+          { id: "admin_profile_1", roles: ["SYSTEM_ADMIN"] },
+          { id: "admin_profile_2", roles: ["SUPPORT_ADMIN"] },
+        ],
+      },
+    });
+
+    render(<App />);
+
+    await screen.findByText("admin_profile_1");
+    await userEvent.click(screen.getByRole("button", { name: "Add table filter" }));
+    await userEvent.selectOptions(screen.getByLabelText("Filter field"), "roles");
+
+    const valueSelect = screen.getByLabelText("Filter value") as HTMLSelectElement;
+    expect(valueSelect.value).toBe("SYSTEM_ADMIN");
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([input]) => {
+          const rawFilters = new URL(String(input), "http://localhost").searchParams.get(
+            "filters",
+          );
+          return (
+            rawFilters?.includes('"field":"roles"') &&
+            rawFilters.includes('"value":"SYSTEM_ADMIN"')
+          );
+        }),
+      ).toBe(true);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("1 match loaded, 2 columns shown")).toBeTruthy();
+      expect(screen.getByText("admin_profile_1")).toBeTruthy();
+      expect(screen.queryByText("admin_profile_2")).toBeNull();
+      expect(screen.queryByText("No rows match the current search or filters.")).toBeNull();
+    });
+  });
+
   it("clears table search and filters together", async () => {
     mockApiResponses({
       models: [model("User", ["id", "email", "role"])],
