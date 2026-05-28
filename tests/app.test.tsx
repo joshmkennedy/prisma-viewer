@@ -189,9 +189,126 @@ describe("App Query Lab", () => {
         }),
       );
     });
-    expect(await screen.findByText("ada@example.com")).toBeTruthy();
+    expect((await screen.findAllByText("ada@example.com")).length).toBeGreaterThan(0);
+    expect(screen.getByRole("table", { name: "Query Lab table result" })).toBeTruthy();
     expect(screen.getAllByText("id").length).toBeGreaterThan(1);
     expect(screen.getAllByText("email").length).toBeGreaterThan(1);
+  });
+
+  it("switches Query Lab row-shaped results between table and JSON views", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: [
+          {
+            id: "user_1",
+            email: "ada@example.com",
+          },
+        ],
+      },
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    expect(await screen.findByRole("table", { name: "Query Lab table result" })).toBeTruthy();
+
+    await userEvent.click(screen.getAllByRole("button", { name: "JSON" })[0]);
+
+    const jsonResult = screen.getByLabelText("Query Lab JSON result");
+    expect(jsonResult.textContent).toBe(
+      JSON.stringify([{ email: "ada@example.com", id: "user_1" }], null, 2),
+    );
+    expect(screen.queryByRole("table", { name: "Query Lab table result" })).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Table" }));
+    expect(screen.getByRole("table", { name: "Query Lab table result" })).toBeTruthy();
+  });
+
+  it("selects Query Lab rows and renders a reusable record preview", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: [
+          { id: "user_1", email: "ada@example.com" },
+          { id: "user_2", email: "grace@example.com" },
+        ],
+      },
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    expect(await screen.findByLabelText("Query Lab record preview")).toBeTruthy();
+    expect(screen.getByLabelText("Select Query Lab result row 1").getAttribute("aria-selected")).toBe(
+      "true",
+    );
+
+    await userEvent.click(screen.getByLabelText("Select Query Lab result row 2"));
+
+    const preview = screen.getByLabelText("Query Lab record preview");
+    expect(screen.getByLabelText("Select Query Lab result row 2").getAttribute("aria-selected")).toBe(
+      "true",
+    );
+    expect(within(preview).getByText("user_2")).toBeTruthy();
+    expect(within(preview).getByText("grace@example.com")).toBeTruthy();
+    expect(within(preview).queryByText("ada@example.com")).toBeNull();
+  });
+
+  it("keeps nested Query Lab result values readable in table, JSON, and record preview", async () => {
+    mockApiResponses({
+      models: [
+        {
+          ...model("User", ["id", "profile", "posts"]),
+          fields: [
+            field("id", "String"),
+            field("profile", "Json"),
+            field("posts", "Post", "object"),
+          ],
+        },
+      ],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: [
+          {
+            id: "user_1",
+            profile: { role: "admin", flags: ["beta"] },
+            posts: [{ id: "post_1", title: "Nested result" }],
+          },
+        ],
+      },
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    expect(
+      (await screen.findAllByText('{"role":"admin","flags":["beta"]}')).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getAllByText('[{"id":"post_1","title":"Nested result"}]').length).toBeGreaterThan(
+      0,
+    );
+
+    const preview = screen.getByLabelText("Query Lab record preview");
+    expect(within(preview).getByText("profile")).toBeTruthy();
+    expect(within(preview).getByText('{"role":"admin","flags":["beta"]}')).toBeTruthy();
+    expect(within(preview).getByText('[{"id":"post_1","title":"Nested result"}]')).toBeTruthy();
+
+    await userEvent.click(screen.getAllByRole("button", { name: "JSON" })[0]);
+
+    const jsonResult = screen.getByLabelText("Query Lab JSON result");
+    expect(jsonResult.textContent).toContain(
+      '"profile": {\n      "flags": [\n        "beta"\n      ],\n      "role": "admin"\n    }',
+    );
+    expect(jsonResult.textContent).toContain('"posts": [\n      {\n        "id": "post_1"');
   });
 
   it.each([
@@ -224,7 +341,7 @@ describe("App Query Lab", () => {
         }),
       );
     });
-    expect(await screen.findByText(expectedText)).toBeTruthy();
+    expect((await screen.findAllByText(expectedText)).length).toBeGreaterThan(0);
   });
 
   it.each(["findFirst", "findUnique"] as const)(
@@ -278,7 +395,7 @@ describe("App Query Lab", () => {
       );
     });
     expect(await screen.findByText("Count")).toBeTruthy();
-    expect(screen.getByText("42")).toBeTruthy();
+    expect(screen.getAllByText("42").length).toBeGreaterThan(0);
     expect(screen.queryByRole("table")).toBeNull();
   });
 
@@ -486,7 +603,7 @@ describe("App Query Lab", () => {
         }),
       );
     });
-    expect(await screen.findByText("Query Lab notes")).toBeTruthy();
+    expect((await screen.findAllByText("Query Lab notes")).length).toBeGreaterThan(0);
   });
 
   it("shows a stale model state for invalid Query Lab model routes", async () => {
@@ -523,7 +640,7 @@ describe("App Query Lab", () => {
         }),
       );
     });
-    expect(await screen.findByText("ada@example.com")).toBeTruthy();
+    expect((await screen.findAllByText("ada@example.com")).length).toBeGreaterThan(0);
   });
 
   it("navigates from a model page into Query Lab for the current model", async () => {

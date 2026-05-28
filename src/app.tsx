@@ -115,6 +115,7 @@ type RowLoadState =
   | { status: "error"; rows: Record<string, unknown>[]; error: string };
 
 type PreviewMode = "fields" | "json";
+type QueryLabResultMode = "table" | "json";
 type FilterOperator = "contains" | "equals" | "startsWith" | "endsWith" | "empty" | "notEmpty";
 type QueryLabOperation = "findMany" | "findFirst" | "findUnique" | "count";
 
@@ -479,6 +480,32 @@ function rowsForQueryLabResult(operation: QueryLabOperation, result: unknown) {
   return [];
 }
 
+function fieldsForRecord(record: Record<string, unknown> | null, model: Model | null) {
+  if (!record) return [];
+  return Object.keys(record).map((fieldName) => {
+    const metadataField = model?.fields.find((field) => field.name === fieldName);
+    return (
+      metadataField ?? {
+        name: fieldName,
+        kind: "scalar" as const,
+        type: Array.isArray(record[fieldName])
+          ? "Json"
+          : record[fieldName] === null
+            ? "Unknown"
+            : typeof record[fieldName] === "object"
+              ? "Json"
+              : typeof record[fieldName] === "number"
+                ? "Number"
+                : typeof record[fieldName] === "boolean"
+                  ? "Boolean"
+                  : "String",
+        isList: Array.isArray(record[fieldName]),
+        isRequired: record[fieldName] !== null && record[fieldName] !== undefined,
+      }
+    );
+  });
+}
+
 function describeQueryLabNormalization(item: QueryLabArgsNormalization) {
   if (item.action === "cap") {
     return `${item.path}: capped from ${formatValue(item.originalValue)} to ${formatValue(item.value)}`;
@@ -728,11 +755,98 @@ function QueryLabModelRoute() {
   return <QueryLabRoute initialModelName={modelName} />;
 }
 
+function RecordPreview({
+  record,
+  fields,
+  previewMode,
+  onPreviewModeChange,
+  emptyMessage,
+}: {
+  record: Record<string, unknown> | null;
+  fields: Field[];
+  previewMode: PreviewMode;
+  onPreviewModeChange: (value: string) => void;
+  emptyMessage: string;
+}) {
+  if (!record) {
+    return (
+      <div className="rounded-md border border-dashed border-border bg-surface p-6 text-center text-xs text-muted-foreground">
+        {emptyMessage}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <Tabs value={previewMode} onValueChange={onPreviewModeChange}>
+        <TabsList className="mb-3">
+          <TabsTrigger
+            value="fields"
+            currentValue={previewMode}
+            onValueChange={onPreviewModeChange}
+          >
+            Fields
+          </TabsTrigger>
+          <TabsTrigger
+            value="json"
+            currentValue={previewMode}
+            onValueChange={onPreviewModeChange}
+          >
+            <span className="inline-flex items-center gap-1">
+              <FileJson className="h-3 w-3" />
+              JSON
+            </span>
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
+
+      {previewMode === "fields" ? (
+        <dl className="max-h-full overflow-auto rounded-md border border-border bg-surface">
+          {fields.map((field) => (
+            <div
+              key={field.name}
+              className="grid grid-cols-[120px_minmax(0,1fr)] border-b border-border last:border-b-0"
+            >
+              <dt className="border-r border-border bg-panel px-2 py-2">
+                <span className="block truncate text-xs font-medium">{field.name}</span>
+                <span className="block truncate font-mono text-[10px] text-muted-foreground">
+                  {formatFieldType(field)}
+                </span>
+              </dt>
+              <dd className="min-w-0 px-2 py-2 font-mono text-[11px] leading-5">
+                <span
+                  title={formatValue(record[field.name])}
+                  className={cn(
+                    "block break-words",
+                    record[field.name] === null && "text-muted-foreground",
+                  )}
+                >
+                  {formatValue(record[field.name])}
+                </span>
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <pre
+          aria-label="Selected record JSON preview"
+          className="max-h-full max-w-full overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-surface p-3 font-mono text-[11px] leading-5 text-code"
+        >
+          {formatJsonPreview(record)}
+        </pre>
+      )}
+    </>
+  );
+}
+
 function QueryLabRoute({ initialModelName }: { initialModelName: string | null }) {
   const navigate = useNavigate();
   const [selectedModelName, setSelectedModelName] = useState(initialModelName ?? "");
   const [operation, setOperation] = useState<QueryLabOperation>("findMany");
   const [argsSource, setArgsSource] = useState(QUERY_LAB_DEFAULT_ARGS);
+  const [resultMode, setResultMode] = useState<QueryLabResultMode>("table");
+  const [selectedResultRowIndex, setSelectedResultRowIndex] = useState(0);
+  const [recordPreviewMode, setRecordPreviewMode] = useState<PreviewMode>("fields");
 
   const modelQuery = useQuery({
     queryKey: ["models"],
@@ -783,6 +897,15 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
     previewResult,
   );
   const rowColumns = useMemo(() => columnsForRows(resultRows), [resultRows]);
+  const canShowResultTable = rowColumns.length > 0;
+  const selectedResultRow =
+    canShowResultTable && isRowObject(resultRows[selectedResultRowIndex])
+      ? resultRows[selectedResultRowIndex]
+      : null;
+  const selectedResultFields = useMemo(
+    () => fieldsForRecord(selectedResultRow, selectedModel),
+    [selectedResultRow, selectedModel],
+  );
   const scalarCount =
     previewMutation.data?.operation === "count" && typeof previewResult === "number"
       ? previewResult
@@ -803,6 +926,23 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
     Boolean(selectedModel) &&
     modelQuery.isSuccess &&
     !previewMutation.isPending;
+
+  useEffect(() => {
+    setSelectedResultRowIndex(0);
+    setResultMode("table");
+  }, [previewMutation.data]);
+
+  function updateQueryLabResultMode(value: string) {
+    if (value === "table" || value === "json") {
+      setResultMode(value);
+    }
+  }
+
+  function updateQueryLabPreviewMode(value: string) {
+    if (value === "fields" || value === "json") {
+      setRecordPreviewMode(value);
+    }
+  }
 
   return (
     <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground shadow-tool">
@@ -997,54 +1137,183 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                 </div>
               ) : scalarCount !== null ? (
                 <div className="p-6">
+                  <div className="mb-3">
+                    <Tabs value="json" onValueChange={updateQueryLabResultMode}>
+                      <TabsList>
+                        <TabsTrigger
+                          value="json"
+                          currentValue="json"
+                          onValueChange={updateQueryLabResultMode}
+                        >
+                          <span className="inline-flex items-center gap-1">
+                            <FileJson className="h-3 w-3" />
+                            JSON
+                          </span>
+                        </TabsTrigger>
+                      </TabsList>
+                    </Tabs>
+                  </div>
                   <div className="inline-flex min-w-36 flex-col rounded-md border border-border bg-panel px-4 py-3">
                     <span className="text-xs font-medium text-muted-foreground">Count</span>
                     <span className="mt-1 font-mono text-3xl font-semibold text-foreground">
                       {scalarCount}
                     </span>
                   </div>
+                  <pre
+                    aria-label="Query Lab JSON result"
+                    className="mt-3 max-h-72 overflow-auto rounded-md border border-border bg-panel p-3 font-mono text-[11px] text-code"
+                  >
+                    {formatJsonBlock(previewResult)}
+                  </pre>
                 </div>
               ) : emptySingleRecordResult ? (
-                <div className="p-6 text-center text-xs text-muted-foreground">
-                  No record matched this {previewMutation.data.operation} query.
+                <div className="p-6">
+                  <Tabs value="json" onValueChange={updateQueryLabResultMode}>
+                    <TabsList className="mb-3">
+                      <TabsTrigger
+                        value="json"
+                        currentValue="json"
+                        onValueChange={updateQueryLabResultMode}
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          <FileJson className="h-3 w-3" />
+                          JSON
+                        </span>
+                      </TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                  <div className="text-center text-xs text-muted-foreground">
+                    No record matched this {previewMutation.data.operation} query.
+                  </div>
+                  <pre
+                    aria-label="Query Lab JSON result"
+                    className="mt-3 max-h-72 overflow-auto rounded-md border border-border bg-panel p-3 font-mono text-[11px] text-code"
+                  >
+                    {formatJsonBlock(previewResult)}
+                  </pre>
                 </div>
-              ) : rowColumns.length > 0 ? (
-                <table className="w-max min-w-full border-collapse text-left text-xs">
-                  <thead className="sticky top-0 bg-panel">
-                    <tr>
-                      {rowColumns.map((column) => (
-                        <th
-                          key={column}
-                          className="min-w-[150px] border-b border-r border-border px-3 py-2 font-medium text-muted-foreground last:border-r-0"
+              ) : canShowResultTable ? (
+                <div>
+                  <div className="sticky top-0 z-10 border-b border-border bg-surface px-3 py-2">
+                    <Tabs value={resultMode} onValueChange={updateQueryLabResultMode}>
+                      <TabsList>
+                        <TabsTrigger
+                          value="table"
+                          currentValue={resultMode}
+                          onValueChange={updateQueryLabResultMode}
                         >
-                          {column}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(resultRows as Record<string, unknown>[]).map((row, index) => (
-                      <tr key={index} className="h-10 border-b border-border">
-                        {rowColumns.map((column) => (
-                          <td
-                            key={column}
-                            className="min-w-[150px] border-r border-border px-3 py-1.5 last:border-r-0"
+                          <span className="inline-flex items-center gap-1">
+                            <TableProperties className="h-3 w-3" />
+                            Table
+                          </span>
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value="json"
+                          currentValue={resultMode}
+                          onValueChange={updateQueryLabResultMode}
+                        >
+                          <span className="inline-flex items-center gap-1">
+                            <FileJson className="h-3 w-3" />
+                            JSON
+                          </span>
+                        </TabsTrigger>
+                      </TabsList>
+                    </Tabs>
+                  </div>
+                  {resultMode === "table" ? (
+                    <table
+                      aria-label="Query Lab table result"
+                      className="w-max min-w-full border-collapse text-left text-xs"
+                    >
+                      <thead className="sticky top-10 bg-panel">
+                        <tr>
+                          {rowColumns.map((column) => (
+                            <th
+                              key={column}
+                              className="min-w-[150px] border-b border-r border-border px-3 py-2 font-medium text-muted-foreground last:border-r-0"
+                            >
+                              {column}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(resultRows as Record<string, unknown>[]).map((row, index) => (
+                          <tr
+                            key={index}
+                            aria-label={`Select Query Lab result row ${index + 1}`}
+                            aria-selected={selectedResultRowIndex === index ? "true" : undefined}
+                            tabIndex={0}
+                            onClick={() => setSelectedResultRowIndex(index)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                setSelectedResultRowIndex(index);
+                              }
+                            }}
+                            className={cn(
+                              "h-10 cursor-pointer border-b border-border outline-none hover:bg-elevated/70 focus:bg-elevated/70",
+                              selectedResultRowIndex === index && "bg-elevated",
+                            )}
                           >
-                            <span className="block max-h-5 truncate font-mono text-[11px] leading-5">
-                              {formatValue(row[column])}
-                            </span>
-                          </td>
+                            {rowColumns.map((column) => (
+                              <td
+                                key={column}
+                                className="min-w-[150px] border-r border-border px-3 py-1.5 last:border-r-0"
+                              >
+                                <span
+                                  title={formatValue(row[column])}
+                                  className="block max-h-5 truncate font-mono text-[11px] leading-5"
+                                >
+                                  {formatValue(row[column])}
+                                </span>
+                              </td>
+                            ))}
+                          </tr>
                         ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                      </tbody>
+                    </table>
+                  ) : (
+                    <pre
+                      aria-label="Query Lab JSON result"
+                      className="m-3 overflow-auto rounded-md border border-border bg-panel p-3 font-mono text-[11px] text-code"
+                    >
+                      {formatJsonBlock(previewResult)}
+                    </pre>
+                  )}
+                </div>
               ) : (
-                <pre className="m-3 overflow-auto rounded-md border border-border bg-panel p-3 font-mono text-[11px] text-code">
+                <pre
+                  aria-label="Query Lab JSON result"
+                  className="m-3 overflow-auto rounded-md border border-border bg-panel p-3 font-mono text-[11px] text-code"
+                >
                   {formatJsonBlock(previewResult)}
                 </pre>
               )}
             </div>
+
+            {previewMutation.data && canShowResultTable ? (
+              <section
+                aria-label="Query Lab record preview"
+                className="border-t border-border bg-panel px-3 py-3"
+              >
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold">Record Preview</h2>
+                    <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+                      Row {selectedResultRowIndex + 1} of {resultRows.length}
+                    </p>
+                  </div>
+                </div>
+                <RecordPreview
+                  record={selectedResultRow}
+                  fields={selectedResultFields}
+                  previewMode={recordPreviewMode}
+                  onPreviewModeChange={updateQueryLabPreviewMode}
+                  emptyMessage="Select a Query Lab result row to inspect the full record."
+                />
+              </section>
+            ) : null}
 
             {previewMutation.data ? (
               <section
@@ -2237,74 +2506,13 @@ function AppContent({
           </div>
 
           <div className="min-h-0 flex-1 overflow-auto p-3">
-            {selectedRow ? (
-              <>
-                <Tabs value={previewMode} onValueChange={updatePreviewMode}>
-                  <TabsList className="mb-3">
-                    <TabsTrigger
-                      value="fields"
-                      currentValue={previewMode}
-                      onValueChange={updatePreviewMode}
-                    >
-                      Fields
-                    </TabsTrigger>
-                    <TabsTrigger
-                      value="json"
-                      currentValue={previewMode}
-                      onValueChange={updatePreviewMode}
-                    >
-                      <span className="inline-flex items-center gap-1">
-                        <FileJson className="h-3 w-3" />
-                        JSON
-                      </span>
-                    </TabsTrigger>
-                  </TabsList>
-                </Tabs>
-
-                {previewMode === "fields" ? (
-                  <dl className="max-h-full overflow-auto rounded-md border border-border bg-surface">
-                    {tableFields.map((field) => (
-                      <div
-                        key={field.name}
-                        className="grid grid-cols-[120px_minmax(0,1fr)] border-b border-border last:border-b-0"
-                      >
-                        <dt className="border-r border-border bg-panel px-2 py-2">
-                          <span className="block truncate text-xs font-medium">
-                            {field.name}
-                          </span>
-                          <span className="block truncate font-mono text-[10px] text-muted-foreground">
-                            {formatFieldType(field)}
-                          </span>
-                        </dt>
-                        <dd className="min-w-0 px-2 py-2 font-mono text-[11px] leading-5">
-                          <span
-                            title={formatValue(selectedRow[field.name])}
-                            className={cn(
-                              "block break-words",
-                              selectedRow[field.name] === null &&
-                                "text-muted-foreground",
-                            )}
-                          >
-                            {formatValue(selectedRow[field.name])}
-                          </span>
-                        </dd>
-                      </div>
-                    ))}
-                  </dl>
-                ) : (
-                  <pre
-                    aria-label="Selected record JSON preview"
-                    className="max-h-full max-w-full overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-surface p-3 font-mono text-[11px] leading-5 text-code"
-                  >
-                    {formatJsonPreview(selectedRow)}
-                  </pre>
-                )}
-              </>
-            ) : (
-              <div className="rounded-md border border-dashed border-border bg-surface p-6 text-center text-xs text-muted-foreground">
-                Select a table row to inspect the full record.
-              </div>
-            )}
+            <RecordPreview
+              record={selectedRow}
+              fields={tableFields}
+              previewMode={previewMode}
+              onPreviewModeChange={updatePreviewMode}
+              emptyMessage="Select a table row to inspect the full record."
+            />
           </div>
         </aside>
       </section>
