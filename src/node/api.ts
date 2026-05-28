@@ -1,18 +1,62 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { performance } from "node:perf_hooks";
 import type { PrismaFieldMetadata, PrismaModelMetadata } from "./metadata.js";
 import { MetadataError, discoverPrismaMetadata } from "./metadata.js";
 import type { PrismaRuntime } from "./prisma.js";
+import { parseQueryLabArgsSource } from "./query-lab-args.js";
+import {
+  QUERY_LAB_SAFETY_LIMITS,
+  QueryLabTimeoutError,
+  measureSerializedPayload,
+  validateQueryLabArgsDepth,
+  withQueryLabTimeout,
+} from "./query-lab-safety.js";
+import { validateQueryLabArgs, type QueryLabOperation } from "./query-lab-validation.js";
+import { analyzeQueryLabWarnings } from "./query-lab-warnings.js";
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
+const DEFAULT_QUERY_LAB_TAKE = 25;
+const MAX_QUERY_LAB_TAKE = 100;
+const MAX_REQUEST_BODY_BYTES = 256 * 1024;
+const QUERY_LAB_OPERATIONS = ["findMany", "findFirst", "findUnique", "count"] as const;
+const queryEventRecorders = new WeakMap<PrismaRuntime["client"], QueryEventRecorder>();
+
+type QueryLabSqlEvent = {
+  query?: string;
+  params?: string;
+  durationMs?: number;
+};
+
+type QueryEventRecorder = {
+  events: QueryLabSqlEvent[];
+};
+
+type QueryLabArgsNormalization =
+  | {
+      path: string;
+      action: "default";
+      reason: "findManySafetyTake";
+      value: unknown;
+    }
+  | {
+      path: string;
+      action: "cap";
+      reason: "findManyMaxTake";
+      originalValue: unknown;
+      value: unknown;
+    };
 
 type ApiErrorCode =
   | "DELEGATE_UNAVAILABLE"
   | "INVALID_FILTER"
   | "INVALID_PAGINATION"
+  | "INVALID_QUERY"
   | "METHOD_NOT_ALLOWED"
   | "METADATA_UNAVAILABLE"
   | "MODEL_NOT_FOUND"
+  | "OPERATION_NOT_SUPPORTED"
+  | "QUERY_LAB_SAFETY_LIMIT"
   | "ROWS_UNAVAILABLE";
 
 type MiddlewareNext = (error?: unknown) => void;
@@ -43,6 +87,11 @@ export function createPrismaApiMiddleware(prismaRuntime: PrismaRuntime) {
       return;
     }
 
+    if (url.pathname === "/api/query-lab/preview") {
+      await handleQueryLabPreviewRequest(request, response, prismaRuntime);
+      return;
+    }
+
     const rowRoute = parseRowsRoute(url.pathname);
     if (!rowRoute) {
       next();
@@ -51,6 +100,237 @@ export function createPrismaApiMiddleware(prismaRuntime: PrismaRuntime) {
 
     await handleRowsRequest(request, response, prismaRuntime, rowRoute.modelName, url);
   };
+}
+
+async function handleQueryLabPreviewRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  prismaRuntime: PrismaRuntime,
+) {
+  if (request.method !== "POST") {
+    response.setHeader("Allow", "POST");
+    sendJson(response, 405, {
+      error: {
+        code: "METHOD_NOT_ALLOWED",
+        message: "Prisma Viewer exposes only read-only API endpoints.",
+      },
+    });
+    return;
+  }
+
+  const body = await readJsonBody(request);
+  if ("error" in body) {
+    sendJson(response, 400, {
+      error: {
+        code: "INVALID_QUERY",
+        message: body.error,
+      },
+    });
+    return;
+  }
+
+  const payload = body.value;
+  if (!isRecord(payload)) {
+    sendJson(response, 400, {
+      error: {
+        code: "INVALID_QUERY",
+        message: "Query Lab preview requests must include a JSON object body.",
+      },
+    });
+    return;
+  }
+
+  const modelName = payload.model;
+  const operation = payload.operation;
+  const argsSource = payload.argsSource;
+  if (typeof modelName !== "string" || modelName.trim() === "") {
+    sendJson(response, 400, {
+      error: {
+        code: "INVALID_QUERY",
+        message: "Query Lab preview requests must include a model name.",
+      },
+    });
+    return;
+  }
+  if (!isQueryLabOperation(operation)) {
+    sendJson(response, 400, {
+      error: {
+        code: "OPERATION_NOT_SUPPORTED",
+        message: "Query Lab supports only findMany, findFirst, findUnique, and count.",
+      },
+    });
+    return;
+  }
+  if (typeof argsSource !== "string") {
+    sendJson(response, 400, {
+      error: {
+        code: "INVALID_QUERY",
+        message: "Query Lab preview requests must include an args source string.",
+      },
+    });
+    return;
+  }
+
+  let metadata;
+  try {
+    metadata = discoverPrismaMetadata(prismaRuntime.client);
+  } catch (error) {
+    sendJson(response, 500, {
+      error: {
+        code: "METADATA_UNAVAILABLE",
+        message:
+          error instanceof MetadataError
+            ? error.message
+            : "Could not discover Prisma model metadata.",
+      },
+    });
+    return;
+  }
+
+  const model = metadata.models.find((candidate) => candidate.name === modelName);
+  if (!model) {
+    sendJson(response, 404, {
+      error: {
+        code: "MODEL_NOT_FOUND",
+        message: `Unknown Prisma model: ${modelName}.`,
+      },
+    });
+    return;
+  }
+
+  const parsedArgs = parseQueryLabArgsSource(argsSource);
+  if ("error" in parsedArgs) {
+    sendJson(response, 400, {
+      error: {
+        code: "INVALID_QUERY",
+        message: parsedArgs.error,
+      },
+    });
+    return;
+  }
+
+  const validatedArgs = validateQueryLabArgs(metadata, model, operation, parsedArgs.args);
+  if ("error" in validatedArgs) {
+    sendJson(response, 400, {
+      error: {
+        code: "INVALID_QUERY",
+        message: validatedArgs.error,
+      },
+    });
+    return;
+  }
+
+  const argsDepth = validateQueryLabArgsDepth(validatedArgs.args);
+  if ("error" in argsDepth) {
+    sendJson(response, 400, {
+      error: {
+        code: "QUERY_LAB_SAFETY_LIMIT",
+        message: argsDepth.error,
+      },
+    });
+    return;
+  }
+
+  const delegate = prismaRuntime.client[delegateNameForModel(model.name)];
+  if (!isQueryLabDelegate(delegate, operation)) {
+    sendJson(response, 500, {
+      error: {
+        code: "DELEGATE_UNAVAILABLE",
+        message: `Could not find a read-only Prisma delegate for model ${model.name}.`,
+      },
+    });
+    return;
+  }
+
+  const normalized =
+    operation === "findMany"
+      ? normalizeFindManyArgs(validatedArgs.args)
+      : { args: validatedArgs.args, normalization: [] };
+  const warnings = analyzeQueryLabWarnings({
+    metadata,
+    model,
+    operation,
+    args: normalized.args,
+    normalization: normalized.normalization,
+  });
+  const safetyLimits = {
+    ...QUERY_LAB_SAFETY_LIMITS,
+    argsDepth: argsDepth.depth,
+  };
+  const prismaCall = formatPrismaClientCall(model.name, operation, normalized.args);
+  const queryEventRecorder = getQueryEventRecorder(prismaRuntime.client);
+  const queryEventStartIndex = queryEventRecorder.events.length;
+  const startedAt = performance.now();
+
+  try {
+    const result = await withQueryLabTimeout(
+      delegate[operation](normalized.args),
+      QUERY_LAB_SAFETY_LIMITS.timeoutMs,
+    );
+    const durationMs = elapsedMilliseconds(startedAt);
+    const sqlEvents = queryEventRecorder.events.slice(queryEventStartIndex);
+    const responseSize = measureSerializedPayload(result);
+    if ("error" in responseSize) {
+      sendJson(response, 500, {
+        error: {
+          code: "QUERY_LAB_SAFETY_LIMIT",
+          message: responseSize.error,
+        },
+      });
+      return;
+    }
+    if (responseSize.bytes > QUERY_LAB_SAFETY_LIMITS.maxResponseBytes) {
+      sendJson(response, 413, {
+        error: {
+          code: "QUERY_LAB_SAFETY_LIMIT",
+          message: `Query Lab safety limit exceeded: serialized response size ${responseSize.bytes} bytes exceeds the maximum of ${QUERY_LAB_SAFETY_LIMITS.maxResponseBytes} bytes.`,
+        },
+      });
+      return;
+    }
+
+    sendJson(response, 200, {
+      model: model.name,
+      operation,
+      args: normalized.args,
+      normalizedArgs: normalized.args,
+      normalization: normalized.normalization,
+      warnings,
+      safetyLimits: {
+        ...safetyLimits,
+        responseSizeBytes: responseSize.bytes,
+      },
+      prismaCall,
+      timing: {
+        durationMs,
+      },
+      sql: {
+        events: sqlEvents,
+      },
+      result,
+      rows: operation === "findMany" && Array.isArray(result) ? result : undefined,
+    });
+  } catch (error) {
+    if (error instanceof QueryLabTimeoutError) {
+      sendJson(response, 504, {
+        error: {
+          code: "QUERY_LAB_SAFETY_LIMIT",
+          message: error.message,
+        },
+      });
+      return;
+    }
+
+    sendJson(response, 500, {
+      error: {
+        code: "ROWS_UNAVAILABLE",
+        message:
+          error instanceof Error && error.message
+            ? `Could not preview ${operation} for model ${model.name}: ${error.message}`
+            : `Could not preview ${operation} for model ${model.name}.`,
+      },
+    });
+  }
 }
 
 function handleModelsRequest(
@@ -474,6 +754,169 @@ function parsePositiveInteger(value: string) {
   return parsed;
 }
 
+async function readJsonBody(
+  request: IncomingMessage,
+): Promise<{ value: unknown } | { error: string }> {
+  let size = 0;
+  const chunks: Buffer[] = [];
+
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.byteLength;
+    if (size > MAX_REQUEST_BODY_BYTES) {
+      return { error: "Request body is too large." };
+    }
+    chunks.push(buffer);
+  }
+
+  try {
+    return { value: JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") };
+  } catch {
+    return { error: "Request body must be valid JSON." };
+  }
+}
+
+function normalizeFindManyArgs(args: Record<string, unknown>): {
+  args: Record<string, unknown>;
+  normalization: QueryLabArgsNormalization[];
+} {
+  const take = args.take;
+  if (take === undefined || take === null) {
+    return {
+      args: { ...args, take: DEFAULT_QUERY_LAB_TAKE },
+      normalization: [
+        {
+          path: "take",
+          action: "default",
+          reason: "findManySafetyTake",
+          value: DEFAULT_QUERY_LAB_TAKE,
+        },
+      ],
+    };
+  }
+
+  if (typeof take !== "number" || !Number.isInteger(take) || take < 1) {
+    return {
+      args: { ...args, take: DEFAULT_QUERY_LAB_TAKE },
+      normalization: [
+        {
+          path: "take",
+          action: "default",
+          reason: "findManySafetyTake",
+          value: DEFAULT_QUERY_LAB_TAKE,
+        },
+      ],
+    };
+  }
+
+  if (take > MAX_QUERY_LAB_TAKE) {
+    return {
+      args: {
+        ...args,
+        take: MAX_QUERY_LAB_TAKE,
+      },
+      normalization: [
+        {
+          path: "take",
+          action: "cap",
+          reason: "findManyMaxTake",
+          originalValue: take,
+          value: MAX_QUERY_LAB_TAKE,
+        },
+      ],
+    };
+  }
+
+  return { args, normalization: [] };
+}
+
+function getQueryEventRecorder(client: PrismaRuntime["client"]): QueryEventRecorder {
+  const existingRecorder = queryEventRecorders.get(client);
+  if (existingRecorder) return existingRecorder;
+
+  const recorder: QueryEventRecorder = { events: [] };
+  queryEventRecorders.set(client, recorder);
+
+  if (typeof client.$on === "function") {
+    try {
+      client.$on("query", (event) => {
+        const normalizedEvent = normalizeQueryEvent(event);
+        if (normalizedEvent) recorder.events.push(normalizedEvent);
+      });
+    } catch {
+      // Query event logging is optional. Query Lab still reports logical timing.
+    }
+  }
+
+  return recorder;
+}
+
+function normalizeQueryEvent(event: unknown): QueryLabSqlEvent | undefined {
+  if (!isRecord(event)) return undefined;
+
+  const query = typeof event.query === "string" ? event.query : undefined;
+  const params = typeof event.params === "string" ? event.params : undefined;
+  const durationMs =
+    typeof event.duration === "number" && Number.isFinite(event.duration)
+      ? Math.max(0, event.duration)
+      : undefined;
+
+  if (query === undefined && params === undefined && durationMs === undefined) {
+    return undefined;
+  }
+
+  return {
+    ...(query !== undefined ? { query } : {}),
+    ...(params !== undefined ? { params } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+  };
+}
+
+function elapsedMilliseconds(startedAt: number) {
+  return Math.max(0, performance.now() - startedAt);
+}
+
+function formatPrismaClientCall(
+  modelName: string,
+  operation: QueryLabOperation,
+  args: Record<string, unknown>,
+) {
+  return `prisma.${delegateNameForModel(modelName)}.${operation}(${formatPrismaValue(args, 0)})`;
+}
+
+function formatPrismaValue(value: unknown, depth: number): string {
+  const indent = "  ".repeat(depth);
+  const nextIndent = "  ".repeat(depth + 1);
+
+  if (value instanceof Date) return `new Date(${JSON.stringify(value.toISOString())})`;
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "[]";
+    return `[\n${value
+      .map((item) => `${nextIndent}${formatPrismaValue(item, depth + 1)}`)
+      .join(",\n")}\n${indent}]`;
+  }
+  if (isRecord(value)) {
+    const entries = Object.entries(value);
+    if (entries.length === 0) return "{}";
+    return `{\n${entries
+      .map(([key, item]) => `${nextIndent}${formatObjectKey(key)}: ${formatPrismaValue(item, depth + 1)}`)
+      .join(",\n")}\n${indent}}`;
+  }
+
+  return JSON.stringify(value);
+}
+
+function formatObjectKey(key: string) {
+  return /^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key);
+}
+
+function isQueryLabOperation(value: unknown): value is QueryLabOperation {
+  return (
+    typeof value === "string" &&
+    QUERY_LAB_OPERATIONS.includes(value as (typeof QUERY_LAB_OPERATIONS)[number])
+  );
+}
+
 function delegateNameForModel(modelName: string) {
   return modelName.charAt(0).toLowerCase() + modelName.slice(1);
 }
@@ -488,13 +931,20 @@ function selectFieldsForModel(model: PrismaModelMetadata) {
   }, {});
 }
 
+function isQueryLabDelegate(
+  value: unknown,
+  operation: QueryLabOperation,
+): value is Record<QueryLabOperation, (args: Record<string, unknown>) => Promise<unknown>> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    operation in value &&
+    typeof value[operation as keyof typeof value] === "function"
+  );
+}
+
 function isFindManyDelegate(value: unknown): value is {
-  findMany: (args: {
-    skip: number;
-    take: number;
-    select: Record<string, true>;
-    where?: Record<string, unknown>;
-  }) => Promise<unknown[]>;
+  findMany: (args: Record<string, unknown>) => Promise<unknown[]>;
 } {
   return (
     typeof value === "object" &&
@@ -502,6 +952,10 @@ function isFindManyDelegate(value: unknown): value is {
     "findMany" in value &&
     typeof value.findMany === "function"
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function sendJson(

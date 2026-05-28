@@ -7,10 +7,11 @@ import type { StartupContext } from "./startup.js";
 export type PrismaClientLike = {
   $connect?: () => Promise<void>;
   $disconnect?: () => Promise<void>;
+  $on?: (event: "query", handler: (event: unknown) => void) => void;
   [delegateName: string]: unknown;
 };
 
-type PrismaClientConstructor = new () => PrismaClientLike;
+type PrismaClientConstructor = new (options?: unknown) => PrismaClientLike;
 
 export type PrismaRuntime = {
   client: PrismaClientLike;
@@ -37,7 +38,9 @@ export async function createTargetPrismaRuntime(
 
   let client: PrismaClientLike;
   try {
-    client = new PrismaClient();
+    client = new PrismaClient({
+      log: [{ emit: "event", level: "query" }],
+    });
   } catch (error) {
     if (isMissingGeneratedClientError(error)) {
       throw missingGeneratedClientError(context);

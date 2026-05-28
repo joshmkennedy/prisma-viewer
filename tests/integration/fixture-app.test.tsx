@@ -150,6 +150,81 @@ describe("fixture Prisma app integration", () => {
     },
     60_000,
   );
+
+  it(
+    "runs Query Lab previews against the fixture Prisma app and reports inspector data",
+    async () => {
+      server = await startApiServer(context);
+      originalFetch = globalThis.fetch;
+
+      const queryResponse = await originalFetch(new URL("/api/query-lab/preview", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "User",
+          operation: "findMany",
+          argsSource: `{
+            where: { email: { contains: "ada" } },
+            select: { email: true, name: true },
+            take: 5
+          }`,
+        }),
+      });
+
+      expect(queryResponse.status).toBe(200);
+      const queryPayload = await queryResponse.json();
+      expect(queryPayload).toMatchObject({
+        model: "User",
+        operation: "findMany",
+        args: {
+          where: { email: { contains: "ada" } },
+          select: { email: true, name: true },
+          take: 5,
+        },
+        normalizedArgs: {
+          where: { email: { contains: "ada" } },
+          select: { email: true, name: true },
+          take: 5,
+        },
+        normalization: [],
+        result: [{ email: "ada@example.com", name: "Ada Lovelace" }],
+        rows: [{ email: "ada@example.com", name: "Ada Lovelace" }],
+      });
+      expect(queryPayload.prismaCall).toContain("prisma.user.findMany");
+      expect(queryPayload.timing.durationMs).toEqual(expect.any(Number));
+      expect(queryPayload.timing.durationMs).toBeGreaterThanOrEqual(0);
+      expect(Array.isArray(queryPayload.sql.events)).toBe(true);
+
+      if (queryPayload.sql.events.length > 0) {
+        expect(queryPayload.sql.events[0]).toMatchObject({
+          query: expect.any(String),
+          params: expect.any(String),
+          durationMs: expect.any(Number),
+        });
+      } else {
+        expect(queryPayload.sql.events).toEqual([]);
+      }
+
+      const invalidResponse = await originalFetch(new URL("/api/query-lab/preview", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "User",
+          operation: "findMany",
+          argsSource: "{ where: { unknownFixtureField: 'Ada' } }",
+        }),
+      });
+
+      expect(invalidResponse.status).toBe(400);
+      expect(await invalidResponse.json()).toEqual({
+        error: {
+          code: "INVALID_QUERY",
+          message: "Unknown field where.unknownFixtureField on model User.",
+        },
+      });
+    },
+    60_000,
+  );
 });
 
 async function startApiServer(context: StartupContext): Promise<StartedApiServer> {

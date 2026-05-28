@@ -1,10 +1,18 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/app";
+
+const monacoSetModelMarkers = vi.hoisted(() => vi.fn());
+const monacoDefineTheme = vi.hoisted(() => vi.fn());
+const monacoRegisterLanguage = vi.hoisted(() => vi.fn());
+const monacoSetMonarchTokensProvider = vi.hoisted(() => vi.fn());
+const monacoRegisterCompletionItemProvider = vi.hoisted(() =>
+  vi.fn(() => ({ dispose: vi.fn() })),
+);
 
 vi.mock("sonner", async (importOriginal) => {
   const actual = await importOriginal<typeof import("sonner")>();
@@ -16,6 +24,71 @@ vi.mock("sonner", async (importOriginal) => {
     },
   };
 });
+
+vi.mock("@monaco-editor/react", () => ({
+  default: ({
+    value,
+    onChange,
+    beforeMount,
+    onMount,
+  }: {
+    value: string;
+    onChange: (value: string | undefined) => void;
+    beforeMount?: (monaco: unknown) => void;
+    onMount?: (editor: unknown, monaco: unknown) => void;
+  }) => {
+    const model = {
+      getPositionAt: (offset: number) => ({ lineNumber: 1, column: offset + 1 }),
+      getValue: () => value,
+      getOffsetAt: () => 0,
+      getWordUntilPosition: () => ({ startColumn: 1, endColumn: 1 }),
+    };
+    const monaco = {
+      MarkerSeverity: { Warning: 4 },
+      editor: { defineTheme: monacoDefineTheme, setModelMarkers: monacoSetModelMarkers },
+      languages: {
+        CompletionItemKind: {
+          Property: 9,
+          Reference: 18,
+          EnumMember: 20,
+          Operator: 11,
+          Value: 12,
+          Field: 5,
+        },
+        getLanguages: vi.fn(() => []),
+        register: monacoRegisterLanguage,
+        setMonarchTokensProvider: monacoSetMonarchTokensProvider,
+        registerCompletionItemProvider: monacoRegisterCompletionItemProvider,
+      },
+    };
+    beforeMount?.(monaco);
+    onMount?.({ getModel: () => model }, monaco);
+
+    return (
+      <div
+        aria-label="Args Mode editor"
+        role="textbox"
+        contentEditable
+        suppressContentEditableWarning
+        onInput={(event) => onChange(event.currentTarget.textContent ?? "")}
+      >
+        {value}
+      </div>
+    );
+  },
+}));
+
+type QueryLabSqlEvent = {
+  query?: string;
+  params?: string;
+  durationMs?: number;
+};
+
+type QueryLabWarning = {
+  code?: string;
+  path?: string;
+  message: string;
+};
 
 describe("App model sidebar", () => {
   afterEach(() => {
@@ -62,7 +135,7 @@ describe("App model sidebar", () => {
     renderApp("/");
 
     expect(await screen.findByRole("heading", { name: "Models" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "User" })).toBeTruthy();
+    expect(await screen.findByRole("link", { name: "User" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "AuditLog" })).toBeTruthy();
     expect(screen.queryByText("No rows found for this model.")).toBeNull();
   });
@@ -95,7 +168,7 @@ describe("App model sidebar", () => {
   it("renders loading, empty, and error states clearly", async () => {
     mockPendingModelsResponse();
     const { unmount } = renderApp();
-    expect(screen.getAllByText("Loading models...").length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Loading models...")).length).toBeGreaterThan(0);
     unmount();
 
     mockApiResponses({ models: [], rowsByModel: {} });
@@ -107,6 +180,741 @@ describe("App model sidebar", () => {
     renderApp();
     expect((await screen.findAllByText("Could not load models.")).length).toBeGreaterThan(0);
     expect(screen.getByText("metadata unavailable")).toBeTruthy();
+  });
+});
+
+describe("App Query Lab", () => {
+  afterEach(() => {
+    cleanup();
+    window.localStorage.clear();
+    vi.clearAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("renders Query Lab as a first-class route and previews row-shaped findMany results", async () => {
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email"]), model("Post", ["id", "title"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: [
+          {
+            id: "user_1",
+            email: "ada@example.com",
+          },
+        ],
+      },
+    });
+
+    renderApp("/query-lab");
+
+    expect(await screen.findByRole("heading", { name: "Query Lab" })).toBeTruthy();
+    expect(screen.getByLabelText("Query Lab model")).toBeTruthy();
+    expect(screen.getByLabelText("Query Lab operation")).toHaveProperty("value", "findMany");
+    expect(within(screen.getByLabelText("Query Lab operation")).getByText("findFirst")).toBeTruthy();
+    expect(within(screen.getByLabelText("Query Lab operation")).getByText("findUnique")).toBeTruthy();
+    expect(within(screen.getByLabelText("Query Lab operation")).getByText("count")).toBeTruthy();
+    expect(screen.getByLabelText("Args Mode editor")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/query-lab/preview",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "User",
+            operation: "findMany",
+            argsSource: "{}",
+          }),
+        }),
+      );
+    });
+    expect((await screen.findAllByText("ada@example.com")).length).toBeGreaterThan(0);
+    expect(screen.getByRole("table", { name: "Query Lab table result" })).toBeTruthy();
+    expect(screen.getAllByText("id").length).toBeGreaterThan(1);
+    expect(screen.getAllByText("email").length).toBeGreaterThan(1);
+    expect(screen.getByText("take: safety default 25 applied")).toBeTruthy();
+    expect(screen.queryByText("All displayed args came from the editor input.")).toBeNull();
+  });
+
+  it("switches Query Lab row-shaped results between table and JSON views", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: [
+          {
+            id: "user_1",
+            email: "ada@example.com",
+          },
+        ],
+      },
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    expect(await screen.findByRole("table", { name: "Query Lab table result" })).toBeTruthy();
+
+    await userEvent.click(screen.getAllByRole("button", { name: "JSON" })[0]);
+
+    const jsonResult = screen.getByLabelText("Query Lab JSON result");
+    expect(jsonResult.textContent).toBe(
+      JSON.stringify([{ email: "ada@example.com", id: "user_1" }], null, 2),
+    );
+    expect(screen.queryByRole("table", { name: "Query Lab table result" })).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Table" }));
+    expect(screen.getByRole("table", { name: "Query Lab table result" })).toBeTruthy();
+  });
+
+  it("selects Query Lab rows and renders a reusable record preview", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: [
+          { id: "user_1", email: "ada@example.com" },
+          { id: "user_2", email: "grace@example.com" },
+        ],
+      },
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    expect(await screen.findByLabelText("Query Lab record preview")).toBeTruthy();
+    expect(screen.getByLabelText("Select Query Lab result row 1").getAttribute("aria-selected")).toBe(
+      "true",
+    );
+
+    await userEvent.click(screen.getByLabelText("Select Query Lab result row 2"));
+
+    const preview = screen.getByLabelText("Query Lab record preview");
+    expect(screen.getByLabelText("Select Query Lab result row 2").getAttribute("aria-selected")).toBe(
+      "true",
+    );
+    expect(within(preview).getByText("user_2")).toBeTruthy();
+    expect(within(preview).getByText("grace@example.com")).toBeTruthy();
+    expect(within(preview).queryByText("ada@example.com")).toBeNull();
+  });
+
+  it("keeps nested Query Lab result values readable in table, JSON, and record preview", async () => {
+    mockApiResponses({
+      models: [
+        {
+          ...model("User", ["id", "profile", "posts"]),
+          fields: [
+            field("id", "String"),
+            field("profile", "Json"),
+            field("posts", "Post", "object"),
+          ],
+        },
+      ],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: [
+          {
+            id: "user_1",
+            profile: { role: "admin", flags: ["beta"] },
+            posts: [{ id: "post_1", title: "Nested result" }],
+          },
+        ],
+      },
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    expect(
+      (await screen.findAllByText('{"role":"admin","flags":["beta"]}')).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getAllByText('[{"id":"post_1","title":"Nested result"}]').length).toBeGreaterThan(
+      0,
+    );
+
+    const preview = screen.getByLabelText("Query Lab record preview");
+    expect(within(preview).getByText("profile")).toBeTruthy();
+    expect(within(preview).getByText('{"role":"admin","flags":["beta"]}')).toBeTruthy();
+    expect(within(preview).getByText('[{"id":"post_1","title":"Nested result"}]')).toBeTruthy();
+
+    await userEvent.click(screen.getAllByRole("button", { name: "JSON" })[0]);
+
+    const jsonResult = screen.getByLabelText("Query Lab JSON result");
+    expect(jsonResult.textContent).toContain(
+      '"profile": {\n      "flags": [\n        "beta"\n      ],\n      "role": "admin"\n    }',
+    );
+    expect(jsonResult.textContent).toContain('"posts": [\n      {\n        "id": "post_1"');
+  });
+
+  it.each([
+    ["findFirst", { id: "user_1", email: "first@example.com" }, "first@example.com"],
+    ["findUnique", { id: "user_2", email: "unique@example.com" }, "unique@example.com"],
+  ] as const)("previews single-record %s results", async (operation, result, expectedText) => {
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+      previewResultsByOperation: {
+        [operation]: result,
+      },
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await userEvent.selectOptions(screen.getByLabelText("Query Lab operation"), operation);
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/query-lab/preview",
+        expect.objectContaining({
+          body: JSON.stringify({
+            model: "User",
+            operation,
+            argsSource: "{}",
+          }),
+        }),
+      );
+    });
+    expect((await screen.findAllByText(expectedText)).length).toBeGreaterThan(0);
+  });
+
+  it.each(["findFirst", "findUnique"] as const)(
+    "shows an empty result state for %s misses",
+    async (operation) => {
+      mockApiResponses({
+        models: [model("User", ["id", "email"])],
+        rowsByModel: {},
+        previewResultsByOperation: {
+          [operation]: null,
+        },
+      });
+
+      renderApp("/query-lab");
+
+      await screen.findByLabelText("Args Mode editor");
+      await userEvent.selectOptions(screen.getByLabelText("Query Lab operation"), operation);
+      await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+      expect(
+        await screen.findByText(`No record matched this ${operation} query.`),
+      ).toBeTruthy();
+    },
+  );
+
+  it("renders Query Lab count as a scalar result", async () => {
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+      previewResultsByOperation: {
+        count: 42,
+      },
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await userEvent.selectOptions(screen.getByLabelText("Query Lab operation"), "count");
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/query-lab/preview",
+        expect.objectContaining({
+          body: JSON.stringify({
+            model: "User",
+            operation: "count",
+            argsSource: "{}",
+          }),
+        }),
+      );
+    });
+    expect(await screen.findByText("Count")).toBeTruthy();
+    expect(screen.getAllByText("42").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("table")).toBeNull();
+  });
+
+  it("renders the Query Inspector with capped normalized args and a copyable Prisma call", async () => {
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: [{ id: "user_1", email: "ada@example.com" }],
+      },
+    });
+
+    renderApp("/query-lab");
+
+    const editor = await screen.findByLabelText("Args Mode editor");
+    fireEvent.input(editor, {
+      currentTarget: {
+        textContent:
+          '{"where":{"email":{"contains":"example.com"}},"take":500}',
+      },
+      target: {
+        textContent:
+          '{"where":{"email":{"contains":"example.com"}},"take":500}',
+      },
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/query-lab/preview",
+        expect.objectContaining({
+          body: JSON.stringify({
+            model: "User",
+            operation: "findMany",
+            argsSource: '{"where":{"email":{"contains":"example.com"}},"take":500}',
+          }),
+        }),
+      );
+    });
+
+    expect(await screen.findByLabelText("Query Inspector")).toBeTruthy();
+    expect(screen.getByText("User.findMany")).toBeTruthy();
+    expect(screen.getByText("take: capped from 500 to 100")).toBeTruthy();
+    expect(screen.getByLabelText("Normalized Query Lab args").textContent).toContain(
+      '"take": 100',
+    );
+    expect(screen.getByLabelText("Normalized Query Lab args").textContent).toContain(
+      '"email"',
+    );
+    expect(screen.getByLabelText("Prisma Client call").textContent).toContain(
+      "prisma.user.findMany",
+    );
+    expect(screen.getByLabelText("Query Lab safety limits").textContent).toContain(
+      "Args depth",
+    );
+    expect(screen.getByLabelText("Query Lab safety limits").textContent).toContain(
+      "Response size",
+    );
+    expect(screen.getByRole("button", { name: "Copy Prisma Client call" })).toBeTruthy();
+  });
+
+  it("formats Query Lab args in the editor", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+    });
+
+    renderApp("/query-lab");
+
+    const editor = await screen.findByLabelText("Args Mode editor");
+    fireEvent.input(editor, {
+      currentTarget: {
+        textContent: '{"where":{"email":{"contains":"example.com"}},"take":25}',
+      },
+      target: {
+        textContent: '{"where":{"email":{"contains":"example.com"}},"take":25}',
+      },
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Format Query Lab args" }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Args Mode editor").textContent).toBe(`{
+  where: {
+    email: {
+      contains: "example.com"
+    }
+  },
+  take: 25
+}`);
+    });
+  });
+
+  it("shows a toast when Query Lab args formatting fails", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+    });
+
+    renderApp("/query-lab");
+
+    const editor = await screen.findByLabelText("Args Mode editor");
+    fireEvent.input(editor, {
+      currentTarget: { textContent: "{ where: makeWhere() }" },
+      target: { textContent: "{ where: makeWhere() }" },
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Format Query Lab args" }));
+
+    expect(toast.error).toHaveBeenCalledWith("Args Mode source contains unsupported syntax.");
+    expect(screen.getByLabelText("Args Mode editor").textContent).toBe(
+      "{ where: makeWhere() }",
+    );
+  });
+
+  it("shows Query Lab safety limit API errors clearly", async () => {
+    mockApiResponses({
+      models: [model("User", ["id"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: new Error(
+          "Query Lab safety limit exceeded: serialized response size 300000 bytes exceeds the maximum of 262144 bytes.",
+        ),
+      },
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    expect(await screen.findByText("Could not run preview.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Query Lab safety limit exceeded: serialized response size 300000 bytes exceeds the maximum of 262144 bytes.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("renders Query Lab timing, SQL, params, and missing SQL empty states", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: [{ id: "user_1", email: "ada@example.com" }],
+      },
+      queryLabDiagnostics: {
+        timing: { durationMs: 18.25 },
+        sql: {
+          events: [
+            {
+              query: 'SELECT "User"."id", "User"."email" FROM "User" WHERE "User"."id" = ?',
+              params: '["user_1"]',
+              durationMs: 7,
+            },
+            {
+              durationMs: 2,
+            },
+          ],
+        },
+      },
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    expect((await screen.findByLabelText("Query Lab duration")).textContent).toBe("18.3 ms");
+    expect(screen.getByLabelText("Query Lab SQL events")).toBeTruthy();
+    expect(screen.getByLabelText("Query Lab SQL 1").textContent).toContain(
+      'SELECT "User"."id"',
+    );
+    expect(screen.getByLabelText("Query Lab SQL params 1").textContent).toContain(
+      '["user_1"]',
+    );
+    expect(screen.getByText("SQL text was not provided for this event.")).toBeTruthy();
+    expect(screen.getByText("SQL params were not provided for this event.")).toBeTruthy();
+  });
+
+  it("renders Query Lab performance warnings in the inspector", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: [{ id: "user_1", email: "ada@example.com" }],
+      },
+      queryLabDiagnostics: {
+        warnings: [
+          {
+            code: "NON_UNIQUE_FILTER",
+            path: "where.email",
+            message:
+              "where.email filters on User.email, which is not marked id or unique in Prisma metadata. This may scan more rows than expected.",
+          },
+        ],
+      },
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    const warnings = await screen.findByLabelText("Query Lab warnings");
+    expect(within(warnings).getByText("where.email")).toBeTruthy();
+    expect(
+      within(warnings).getByText(
+        "where.email filters on User.email, which is not marked id or unique in Prisma metadata. This may scan more rows than expected.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("shows Query Lab loading and error states", async () => {
+    mockApiResponses({
+      models: [model("User", ["id"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: new Error("invalid args"),
+      },
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    expect(await screen.findByText("Could not run preview.")).toBeTruthy();
+    expect(screen.getByText("invalid args")).toBeTruthy();
+  });
+
+  it("wires Query Lab editor diagnostics into Monaco markers", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+    });
+
+    renderApp("/query-lab");
+
+    const editor = await screen.findByLabelText("Args Mode editor");
+    fireEvent.input(editor, {
+      currentTarget: { textContent: "{ cursor: { id: \"user_1\" } }" },
+      target: { textContent: "{ cursor: { id: \"user_1\" } }" },
+    });
+
+    await waitFor(() => {
+      expect(monacoSetModelMarkers).toHaveBeenLastCalledWith(
+        expect.anything(),
+        "query-lab-assist",
+        expect.arrayContaining([
+          expect.objectContaining({
+            message: "Unsupported Query Lab findMany arg: cursor.",
+          }),
+        ]),
+      );
+    });
+  });
+
+  it("uses a dedicated Query Lab Monaco language for completions", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+
+    expect(monacoRegisterLanguage).toHaveBeenCalledWith({ id: "query-lab-args" });
+    expect(monacoSetMonarchTokensProvider).toHaveBeenCalledWith(
+      "query-lab-args",
+      expect.anything(),
+    );
+    expect(monacoRegisterCompletionItemProvider).toHaveBeenCalledWith(
+      "query-lab-args",
+      expect.anything(),
+    );
+    expect(monacoDefineTheme).toHaveBeenCalledWith(
+      "query-lab-theme",
+      expect.objectContaining({
+        colors: expect.objectContaining({
+          "editor.background": "#101319",
+          "editorGutter.background": "#14181f",
+        }),
+      }),
+    );
+  });
+
+  it("opens a model-specific Query Lab route with the model preselected", async () => {
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email"]), model("Post", ["id", "title"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        Post: [{ id: "post_1", title: "Query Lab notes" }],
+      },
+    });
+
+    renderApp("/query-lab/Post");
+
+    expect(await screen.findByRole("heading", { name: "Query Lab" })).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByLabelText("Query Lab model")).toHaveProperty("value", "Post"),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/query-lab/preview",
+        expect.objectContaining({
+          body: JSON.stringify({
+            model: "Post",
+            operation: "findMany",
+            argsSource: "{}",
+          }),
+        }),
+      );
+    });
+    expect((await screen.findAllByText("Query Lab notes")).length).toBeGreaterThan(0);
+  });
+
+  it("shows a stale model state for invalid Query Lab model routes", async () => {
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: [{ id: "user_1", email: "ada@example.com" }],
+      },
+    });
+
+    renderApp("/query-lab/Missing");
+
+    expect(await screen.findByText("Model not found.")).toBeTruthy();
+    expect(screen.getByText(/Model "Missing" is no longer available/)).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: "Run Query Lab preview" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(screen.getByRole("button", { name: "User" })).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "User" }));
+    await waitFor(() => expect(window.location.pathname).toBe("/query-lab/User"));
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/query-lab/preview",
+        expect.objectContaining({
+          body: JSON.stringify({
+            model: "User",
+            operation: "findMany",
+            argsSource: "{}",
+          }),
+        }),
+      );
+    });
+    expect((await screen.findAllByText("ada@example.com")).length).toBeGreaterThan(0);
+  });
+
+  it("navigates from a model page into Query Lab for the current model", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"]), model("Post", ["id", "title"])],
+      rowsByModel: {
+        User: [],
+        Post: [{ id: "post_1", title: "Routing test" }],
+      },
+    });
+
+    renderApp("/model/Post");
+
+    expect(await screen.findByText("Routing test")).toBeTruthy();
+    await userEvent.click(screen.getByRole("link", { name: "Open Query Lab for Post" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/query-lab/Post"));
+    expect(await screen.findByRole("heading", { name: "Query Lab" })).toBeTruthy();
+    expect(screen.getByLabelText("Query Lab model")).toHaveProperty("value", "Post");
+  });
+
+  it("saves, reopens, renames, and deletes local Query Lab views", async () => {
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email"]), model("Post", ["id", "title"])],
+      rowsByModel: {},
+      previewResultsByOperation: {
+        findFirst: { id: "post_1", title: "Saved view result" },
+      },
+    });
+
+    const { unmount } = renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await waitFor(() =>
+      expect(screen.getByLabelText("Query Lab model")).toHaveProperty("value", "User"),
+    );
+    await userEvent.selectOptions(screen.getByLabelText("Query Lab model"), "Post");
+    await userEvent.selectOptions(screen.getByLabelText("Query Lab operation"), "findFirst");
+
+    const argsSource = '{"where":{"id":"post_1"},"select":{"id":true,"title":true}}';
+    fireEvent.input(screen.getByLabelText("Args Mode editor"), {
+      currentTarget: { textContent: argsSource },
+      target: { textContent: argsSource },
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+    expect(await screen.findByRole("table", { name: "Query Lab table result" })).toBeTruthy();
+    await userEvent.click(screen.getAllByRole("button", { name: "JSON" })[0]);
+
+    await userEvent.type(screen.getByLabelText("Saved Query Lab view name"), "Post lookup");
+    await userEvent.click(screen.getByRole("button", { name: "Save Query Lab view" }));
+
+    const storageKey = "prisma-viewer.query-lab.saved-views.v1";
+    const savedViews = JSON.parse(window.localStorage.getItem(storageKey) ?? "[]") as Array<{
+      name?: string;
+      argsSource?: string;
+      resultMode?: string;
+    }>;
+    expect(savedViews[0]).toMatchObject({
+      name: "Post lookup",
+      argsSource,
+      resultMode: "json",
+    });
+
+    unmount();
+    renderApp("/query-lab");
+
+    expect(
+      await screen.findByRole("button", { name: "Open saved Query Lab view Post lookup" }),
+    ).toBeTruthy();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Open saved Query Lab view Post lookup" }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Query Lab model")).toHaveProperty("value", "Post"),
+    );
+    expect(screen.getByLabelText("Query Lab operation")).toHaveProperty("value", "findFirst");
+    expect(screen.getByLabelText("Args Mode editor").textContent).toBe(argsSource);
+
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/query-lab/preview",
+        expect.objectContaining({
+          body: JSON.stringify({
+            model: "Post",
+            operation: "findFirst",
+            argsSource,
+          }),
+        }),
+      );
+    });
+    expect(await screen.findByLabelText("Query Lab JSON result")).toBeTruthy();
+    expect(screen.queryByRole("table", { name: "Query Lab table result" })).toBeNull();
+
+    vi.stubGlobal("prompt", vi.fn(() => "Published post lookup"));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Rename saved Query Lab view Post lookup" }),
+    );
+    expect(
+      await screen.findByRole("button", {
+        name: "Open saved Query Lab view Published post lookup",
+      }),
+    ).toBeTruthy();
+    expect(window.localStorage.getItem(storageKey)).toContain("Published post lookup");
+
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "Delete saved Query Lab view Published post lookup",
+      }),
+    );
+    expect(
+      screen.queryByRole("button", {
+        name: "Open saved Query Lab view Published post lookup",
+      }),
+    ).toBeNull();
+    expect(window.localStorage.getItem(storageKey)).toBe("[]");
   });
 });
 
@@ -363,6 +1171,158 @@ describe("App row table", () => {
     });
   });
 
+  it("restores pagination from the model URL", async () => {
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {
+        User: [{ id: "user_26", email: "page-two@example.com" }],
+      },
+    });
+
+    renderApp("/model/User?page=2&pageSize=25");
+
+    expect(await screen.findByText("page-two@example.com")).toBeTruthy();
+    expect(screen.getByText("Page 2")).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/models/User/rows?page=2&pageSize=25",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("writes table interactions to the model URL", async () => {
+    const pageOneRows = Array.from({ length: 100 }, (_, index) => ({
+      id: `user_${index + 1}`,
+      email: `user${index + 1}@example.com`,
+    }));
+    mockApiResponses({
+      models: [model("User", ["id", "email", "role"])],
+      rowsByModel: {
+        User: pageOneRows,
+      },
+    });
+
+    renderApp();
+
+    await screen.findByText("user100@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "Next page" }));
+    await waitFor(() => expect(window.location.search).toContain("page=2"));
+
+    await userEvent.selectOptions(screen.getByLabelText("Rows per page"), "25");
+    await waitFor(() => expect(window.location.search).toContain("pageSize=25"));
+    expect(window.location.search).not.toContain("page=2");
+
+    await userEvent.click(screen.getByRole("button", { name: "Sort by email" }));
+    await waitFor(() =>
+      expect(decodeURIComponent(window.location.search)).toContain("sort=email:asc"),
+    );
+
+    await userEvent.type(screen.getByLabelText("Search table rows"), "grace");
+    await waitFor(() => expect(window.location.search).toContain("search=grace"));
+
+    await userEvent.click(screen.getByRole("button", { name: "Add table filter" }));
+    await userEvent.selectOptions(screen.getByLabelText("Filter field"), "role");
+    await userEvent.selectOptions(screen.getByLabelText("Filter operator"), "equals");
+    await userEvent.type(screen.getByLabelText("Filter value"), "admin");
+    await waitFor(() => expect(window.location.search).toContain("filters="));
+
+    await userEvent.click(screen.getByText("user1@example.com"));
+    await waitFor(() => expect(window.location.search).toContain("row=0"));
+  });
+
+  it("restores search, filters, and sorting from the model URL", async () => {
+    const filters = encodeURIComponent(
+      JSON.stringify([{ field: "role", operator: "equals", value: "admin" }]),
+    );
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email", "role"])],
+      rowsByModel: {
+        User: [{ id: "user_1", email: "grace@example.com", role: "admin" }],
+      },
+    });
+
+    renderApp(`/model/User?search=grace&filters=${filters}&sort=email:asc`);
+
+    expect(await screen.findByText("grace@example.com")).toBeTruthy();
+    expect((screen.getByLabelText("Search table rows") as HTMLInputElement).value).toBe(
+      "grace",
+    );
+    expect((screen.getByLabelText("Filter field") as HTMLSelectElement).value).toBe(
+      "role",
+    );
+    expect((screen.getByLabelText("Filter operator") as HTMLSelectElement).value).toBe(
+      "equals",
+    );
+    expect((screen.getByLabelText("Filter value") as HTMLInputElement).value).toBe(
+      "admin",
+    );
+    expect(window.location.search).toContain("sort=email:asc");
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([input]) => {
+          const url = new URL(String(input), "http://localhost");
+          return (
+            url.searchParams.get("search") === "grace" &&
+            url.searchParams.get("filters")?.includes('"field":"role"') &&
+            url.searchParams.get("sort")?.includes('"field":"email"')
+          );
+        }),
+      ).toBe(true);
+    });
+  });
+
+  it("drops stale filter, sort, and selected row URL values after metadata and rows load", async () => {
+    const filters = encodeURIComponent(
+      JSON.stringify([{ field: "missing", operator: "equals", value: "admin" }]),
+    );
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {
+        User: [{ id: "user_1", email: "ada@example.com" }],
+      },
+    });
+
+    renderApp(`/model/User?filters=${filters}&sort=missing:asc&row=5`);
+
+    expect(await screen.findByText("ada@example.com")).toBeTruthy();
+    expect(screen.queryByLabelText("Filter field")).toBeNull();
+    expect(screen.getByText("Select a table row to inspect the full record.")).toBeTruthy();
+    await waitFor(() => {
+      expect(window.location.search).not.toContain("filters=");
+      expect(window.location.search).not.toContain("sort=");
+      expect(window.location.search).not.toContain("row=");
+    });
+    expect(
+      fetchMock.mock.calls.some(([input]) => {
+        const url = new URL(String(input), "http://localhost");
+        return (
+          url.pathname === "/api/models/User/rows" &&
+          !url.searchParams.has("filters") &&
+          !url.searchParams.has("sort")
+        );
+      }),
+    ).toBe(true);
+  });
+
+  it("restores the selected row from the model URL", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {
+        User: [
+          { id: "user_1", email: "ada@example.com" },
+          { id: "user_2", email: "grace@example.com" },
+        ],
+      },
+    });
+
+    renderApp("/model/User?row=1");
+
+    expect((await screen.findAllByText("grace@example.com")).length).toBeGreaterThan(0);
+    expect(screen.getByRole("row", { name: "Select row 2" }).getAttribute("aria-selected")).toBe(
+      "true",
+    );
+    expect(screen.getAllByText("user_2").length).toBeGreaterThan(1);
+  });
+
   it("selects a table row and renders the record preview", async () => {
     mockApiResponses({
       models: [model("User", ["id", "email"])],
@@ -377,7 +1337,7 @@ describe("App row table", () => {
     renderApp();
 
     expect(
-      screen.getByText("Select a table row to inspect the full record."),
+      await screen.findByText("Select a table row to inspect the full record."),
     ).toBeTruthy();
 
     await userEvent.click(await screen.findByText("grace@example.com"));
@@ -844,11 +1804,21 @@ function field(
 function mockApiResponses({
   models,
   rowsByModel,
+  previewRowsByModel = {},
+  previewResultsByOperation = {},
+  queryLabDiagnostics = {},
 }: {
   models: ReturnType<typeof model>[];
   rowsByModel: Record<string, Record<string, unknown>[] | Error | "pending">;
+  previewRowsByModel?: Record<string, Record<string, unknown>[] | Error>;
+  previewResultsByOperation?: Record<string, unknown>;
+  queryLabDiagnostics?: {
+    timing?: { durationMs?: number };
+    sql?: { events?: QueryLabSqlEvent[] };
+    warnings?: QueryLabWarning[];
+  };
 }) {
-  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url === "/api/models") {
       return {
@@ -870,10 +1840,122 @@ function mockApiResponses({
       };
     }
 
+    if (url === "/api/query-lab/preview") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        model?: string;
+        operation?: string;
+        argsSource?: string;
+      };
+      const operation = body.operation ?? "findMany";
+      const resultForOperation = previewResultsByOperation[operation];
+      const rows = previewRowsByModel[body.model ?? ""] ?? [];
+      if (rows instanceof Error) {
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({ error: { message: rows.message } }),
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () => {
+          const parsedArgs = parseMockQueryLabArgs(body.argsSource);
+          const normalized = normalizeMockQueryLabArgs(operation, parsedArgs);
+          const result =
+            resultForOperation !== undefined
+              ? resultForOperation
+              : operation === "findMany"
+                ? rows
+                : null;
+          return {
+            model: body.model,
+            operation,
+            args: normalized.args,
+            normalizedArgs: normalized.args,
+            normalization: normalized.normalization,
+            warnings: queryLabDiagnostics.warnings ?? [],
+            safetyLimits: {
+              maxArgsDepth: 8,
+              timeoutMs: 5000,
+              maxResponseBytes: 262144,
+              argsDepth: 1,
+              responseSizeBytes: JSON.stringify(result).length,
+            },
+            prismaCall: formatMockPrismaCall(body.model, operation, normalized.args),
+            timing: queryLabDiagnostics.timing ?? { durationMs: 1 },
+            sql: queryLabDiagnostics.sql ?? { events: [] },
+            result,
+            rows: operation === "findMany" ? result : undefined,
+          };
+        },
+      };
+    }
+
     throw new Error(`Unexpected fetch URL: ${url}`);
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
+}
+
+function parseMockQueryLabArgs(argsSource: string | undefined) {
+  if (!argsSource) return {};
+  try {
+    const parsed = JSON.parse(argsSource) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Fall through to the lightweight parser used for object-literal defaults.
+  }
+  const takeMatch = /\btake\s*:\s*(\d+)/.exec(argsSource);
+  return takeMatch ? { take: Number(takeMatch[1]) } : {};
+}
+
+function normalizeMockQueryLabArgs(operation: string, args: Record<string, unknown>) {
+  if (operation !== "findMany") return { args, normalization: [] };
+  const take = args.take;
+  if (
+    take === undefined ||
+    take === null ||
+    typeof take !== "number" ||
+    !Number.isInteger(take) ||
+    take < 1
+  ) {
+    return {
+      args: { ...args, take: 25 },
+      normalization: [
+        {
+          path: "take",
+          action: "default",
+          reason: "findManySafetyTake",
+          value: 25,
+        },
+      ],
+    };
+  }
+  if (typeof take === "number" && take > 100) {
+    return {
+      args: { ...args, take: 100 },
+      normalization: [
+        {
+          path: "take",
+          action: "cap",
+          reason: "findManyMaxTake",
+          originalValue: take,
+          value: 100,
+        },
+      ],
+    };
+  }
+  return { args, normalization: [] };
+}
+
+function formatMockPrismaCall(modelName: string | undefined, operation: string, args: unknown) {
+  const delegateName = modelName
+    ? `${modelName.charAt(0).toLowerCase()}${modelName.slice(1)}`
+    : "model";
+  return `prisma.${delegateName}.${operation}(${JSON.stringify(args, null, 2)})`;
 }
 
 function mockPendingModelsResponse() {
