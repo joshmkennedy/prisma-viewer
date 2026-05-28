@@ -49,7 +49,7 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "./components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "./components/ui/tabs";
@@ -61,20 +61,20 @@ import {
   type QueryLabAssistContext,
   type QueryLabCompletionKind,
 } from "./query-lab-editor-assist";
-
-type Field = {
-  name: string;
-  kind: "scalar" | "object" | "enum" | "unsupported";
-  type: string;
-  enumValues?: string[];
-  isList: boolean;
-  isRequired: boolean;
-};
-
-type Model = {
-  name: string;
-  fields: Field[];
-};
+import {
+  QUERY_LAB_OPERATIONS,
+  createQueryLabResultViewModel,
+  formatFieldType,
+  formatJsonPreview,
+  formatValue,
+  getCellTone,
+  type Field,
+  type Model,
+  type PreviewMode,
+  type QueryLabOperation,
+  type QueryLabPreviewResponse,
+  type QueryLabResultMode,
+} from "./query-lab-result-presenter";
 
 type MetadataResponse = {
   models: Model[];
@@ -87,25 +87,6 @@ type RowsResponse = {
     pageSize: number;
     filtersApplied?: boolean;
   };
-};
-
-type QueryLabPreviewResponse = {
-  model: string;
-  operation: QueryLabOperation;
-  args: Record<string, unknown>;
-  normalizedArgs?: Record<string, unknown>;
-  normalization?: QueryLabArgsNormalization[];
-  warnings?: QueryLabWarning[];
-  safetyLimits?: QueryLabSafetyLimits;
-  prismaCall?: string;
-  timing?: {
-    durationMs?: number;
-  };
-  sql?: {
-    events?: QueryLabSqlEvent[];
-  };
-  result?: unknown;
-  rows?: unknown[];
 };
 
 type ApiErrorResponse = {
@@ -125,10 +106,7 @@ type RowLoadState =
   | { status: "success"; rows: Record<string, unknown>[]; error: null }
   | { status: "error"; rows: Record<string, unknown>[]; error: string };
 
-type PreviewMode = "fields" | "json";
-type QueryLabResultMode = "table" | "json";
 type FilterOperator = "contains" | "equals" | "startsWith" | "endsWith" | "empty" | "notEmpty";
-type QueryLabOperation = "findMany" | "findFirst" | "findUnique" | "count";
 
 type SavedQueryLabView = {
   id: string;
@@ -139,41 +117,6 @@ type SavedQueryLabView = {
   resultMode: QueryLabResultMode;
   recordPreviewMode: PreviewMode;
   updatedAt: string;
-};
-
-type QueryLabArgsNormalization =
-  | {
-      path: string;
-      action: "default";
-      reason: string;
-      value: unknown;
-    }
-  | {
-      path: string;
-      action: "cap";
-      reason: string;
-      originalValue: unknown;
-      value: unknown;
-    };
-
-type QueryLabSafetyLimits = {
-  maxArgsDepth?: number;
-  timeoutMs?: number;
-  maxResponseBytes?: number;
-  argsDepth?: number;
-  responseSizeBytes?: number;
-};
-
-type QueryLabSqlEvent = {
-  query?: string;
-  params?: string;
-  durationMs?: number;
-};
-
-type QueryLabWarning = {
-  code?: string;
-  path?: string;
-  message: string;
 };
 
 type TableFilter = {
@@ -221,12 +164,6 @@ const QUERY_LAB_DEFAULT_ARGS = "{}";
 const QUERY_LAB_SAVED_VIEWS_STORAGE_KEY = "prisma-viewer.query-lab.saved-views.v1";
 const QUERY_LAB_LANGUAGE_ID = "query-lab-args";
 const QUERY_LAB_THEME_ID = "query-lab-theme";
-const QUERY_LAB_OPERATIONS: QueryLabOperation[] = [
-  "findMany",
-  "findFirst",
-  "findUnique",
-  "count",
-];
 const QUERY_LAB_MARKER_OWNER = "query-lab-assist";
 
 const THEME_COLORS = {
@@ -552,126 +489,6 @@ function enumValuesForField(field: Field | undefined) {
   return field?.kind === "enum" ? (field.enumValues ?? []) : [];
 }
 
-function formatValue(value: unknown) {
-  if (value === null) return "NULL";
-  if (value === undefined) return "";
-  if (typeof value === "object") return JSON.stringify(value);
-  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T/.test(value)) {
-    return new Intl.DateTimeFormat(undefined, {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(new Date(value));
-  }
-  return String(value);
-}
-
-function getCellTone(value: unknown) {
-  if (value === null) return "null";
-  if (typeof value === "boolean") return "boolean";
-  if (typeof value === "number" || typeof value === "bigint") return "number";
-  if (typeof value === "object") return "json";
-  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T/.test(value)) return "date";
-  return "text";
-}
-
-function formatFieldType(field: Field) {
-  const listSuffix = field.isList ? "[]" : "";
-  const requiredSuffix = field.isRequired ? "" : "?";
-  return `${field.type}${listSuffix}${requiredSuffix}`;
-}
-
-function toStableJsonValue(value: unknown, seen = new WeakSet<object>()): unknown {
-  if (typeof value === "bigint") return value.toString();
-  if (value instanceof Date) return value.toISOString();
-  if (Array.isArray(value)) {
-    return value.map((item) => toStableJsonValue(item, seen));
-  }
-  if (value && typeof value === "object") {
-    if (seen.has(value)) return "[Circular]";
-    seen.add(value);
-
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, item]) => [key, toStableJsonValue(item, seen)]),
-    );
-  }
-  return value;
-}
-
-function formatJsonPreview(row: Record<string, unknown>) {
-  return JSON.stringify(toStableJsonValue(row), null, 2);
-}
-
-function formatJsonBlock(value: unknown) {
-  return JSON.stringify(toStableJsonValue(value), null, 2);
-}
-
-function formatDuration(durationMs: unknown) {
-  if (typeof durationMs !== "number" || !Number.isFinite(durationMs)) {
-    return "Not available";
-  }
-
-  return `${durationMs.toFixed(durationMs < 10 ? 2 : 1)} ms`;
-}
-
-function columnsForRows(rows: unknown[]) {
-  const columns = new Set<string>();
-  for (const row of rows) {
-    if (!isRowObject(row)) return [];
-    Object.keys(row).forEach((key) => columns.add(key));
-  }
-  return Array.from(columns);
-}
-
-function rowsForQueryLabResult(operation: QueryLabOperation, result: unknown) {
-  if (operation === "findMany") return Array.isArray(result) ? result : [];
-  if (operation === "findFirst" || operation === "findUnique") {
-    return isRowObject(result) ? [result] : [];
-  }
-  return [];
-}
-
-function fieldsForRecord(record: Record<string, unknown> | null, model: Model | null) {
-  if (!record) return [];
-  return Object.keys(record).map((fieldName) => {
-    const metadataField = model?.fields.find((field) => field.name === fieldName);
-    return (
-      metadataField ?? {
-        name: fieldName,
-        kind: "scalar" as const,
-        type: Array.isArray(record[fieldName])
-          ? "Json"
-          : record[fieldName] === null
-            ? "Unknown"
-            : typeof record[fieldName] === "object"
-              ? "Json"
-              : typeof record[fieldName] === "number"
-                ? "Number"
-                : typeof record[fieldName] === "boolean"
-                  ? "Boolean"
-                  : "String",
-        isList: Array.isArray(record[fieldName]),
-        isRequired: record[fieldName] !== null && record[fieldName] !== undefined,
-      }
-    );
-  });
-}
-
-function describeQueryLabNormalization(item: QueryLabArgsNormalization) {
-  if (item.action === "cap") {
-    return `${item.path}: capped from ${formatValue(item.originalValue)} to ${formatValue(item.value)}`;
-  }
-
-  return `${item.path}: safety default ${formatValue(item.value)} applied`;
-}
-
-function formatBytes(value: unknown) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return "Not available";
-  if (value < 1024) return `${value} B`;
-  return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`;
-}
-
 function isQueryLabOperation(value: unknown): value is QueryLabOperation {
   return (
     typeof value === "string" &&
@@ -748,10 +565,6 @@ function createSavedQueryLabViewId() {
   }
 
   return `view-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
-function isRowObject(row: unknown): row is Record<string, unknown> {
-  return typeof row === "object" && row !== null && !Array.isArray(row);
 }
 
 function formatRowSummary(
@@ -1218,41 +1031,37 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
     }
   }
 
-  const previewResult = previewMutation.data
-    ? previewMutation.data.result !== undefined
-      ? previewMutation.data.result
-      : (previewMutation.data.rows ?? [])
-    : undefined;
-  const resultRows = rowsForQueryLabResult(
-    previewMutation.data?.operation ?? operation,
-    previewResult,
+  const queryLabResultViewModel = useMemo(
+    () =>
+      createQueryLabResultViewModel({
+        preview: previewMutation.data ?? null,
+        fallbackOperation: operation,
+        selectedModel,
+        selectedRowIndex: selectedResultRowIndex,
+        isLoading: previewMutation.isPending,
+        errorMessage: previewMutation.isError
+          ? previewMutation.error instanceof Error
+            ? previewMutation.error.message
+            : "Query Lab preview failed."
+          : null,
+      }),
+    [
+      operation,
+      previewMutation.data,
+      previewMutation.error,
+      previewMutation.isError,
+      previewMutation.isPending,
+      selectedModel,
+      selectedResultRowIndex,
+    ],
   );
-  const rowColumns = useMemo(() => columnsForRows(resultRows), [resultRows]);
-  const canShowResultTable = rowColumns.length > 0;
-  const selectedResultRow =
-    canShowResultTable && isRowObject(resultRows[selectedResultRowIndex])
-      ? resultRows[selectedResultRowIndex]
+  const queryInspector =
+    queryLabResultViewModel.kind === "count" ||
+    queryLabResultViewModel.kind === "singleMiss" ||
+    queryLabResultViewModel.kind === "rows" ||
+    queryLabResultViewModel.kind === "jsonOnly"
+      ? queryLabResultViewModel.inspector
       : null;
-  const selectedResultFields = useMemo(
-    () => fieldsForRecord(selectedResultRow, selectedModel),
-    [selectedResultRow, selectedModel],
-  );
-  const scalarCount =
-    previewMutation.data?.operation === "count" && typeof previewResult === "number"
-      ? previewResult
-      : null;
-  const emptySingleRecordResult =
-    previewMutation.data &&
-    (previewMutation.data.operation === "findFirst" ||
-      previewMutation.data.operation === "findUnique") &&
-    previewResult === null;
-  const inspectorArgs = previewMutation.data?.normalizedArgs ?? previewMutation.data?.args;
-  const inspectorPrismaCall =
-    previewMutation.data?.prismaCall ??
-    (previewMutation.data
-      ? `prisma.${previewMutation.data.model.charAt(0).toLowerCase()}${previewMutation.data.model.slice(1)}.${previewMutation.data.operation}(${formatJsonBlock(inspectorArgs ?? {})})`
-      : "");
-  const sqlEvents = previewMutation.data?.sql?.events ?? [];
   const canRun =
     Boolean(selectedModel) &&
     modelQuery.isSuccess &&
@@ -1624,24 +1433,20 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
 
           <div className="min-h-0 flex-1 overflow-auto">
             <div className="min-h-[220px]">
-              {previewMutation.isPending ? (
+              {queryLabResultViewModel.kind === "loading" ? (
                 <div className="p-6 text-center text-xs text-muted-foreground">
                   Running preview...
                 </div>
-              ) : previewMutation.isError ? (
+              ) : queryLabResultViewModel.kind === "error" ? (
                 <div className="p-6 text-center text-xs text-muted-foreground">
                   <p className="font-medium text-danger">Could not run preview.</p>
-                  <p className="mt-1">
-                    {previewMutation.error instanceof Error
-                      ? previewMutation.error.message
-                      : "Query Lab preview failed."}
-                  </p>
+                  <p className="mt-1">{queryLabResultViewModel.message}</p>
                 </div>
-              ) : !previewMutation.data ? (
+              ) : queryLabResultViewModel.kind === "empty" ? (
                 <div className="p-6 text-center text-xs text-muted-foreground">
                   Preview results will appear here.
                 </div>
-              ) : scalarCount !== null ? (
+              ) : queryLabResultViewModel.kind === "count" ? (
                 <div className="p-6">
                   <div className="mb-3">
                     <Tabs value="json" onValueChange={updateQueryLabResultMode}>
@@ -1662,17 +1467,17 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                   <div className="inline-flex min-w-36 flex-col rounded-md border border-border bg-panel px-4 py-3">
                     <span className="text-xs font-medium text-muted-foreground">Count</span>
                     <span className="mt-1 font-mono text-3xl font-semibold text-foreground">
-                      {scalarCount}
+                      {queryLabResultViewModel.value}
                     </span>
                   </div>
                   <pre
                     aria-label="Query Lab JSON result"
                     className="mt-3 max-h-72 overflow-auto rounded-md border border-border bg-panel p-3 font-mono text-[11px] text-code"
                   >
-                    {formatJsonBlock(previewResult)}
+                    {queryLabResultViewModel.json}
                   </pre>
                 </div>
-              ) : emptySingleRecordResult ? (
+              ) : queryLabResultViewModel.kind === "singleMiss" ? (
                 <div className="p-6">
                   <Tabs value="json" onValueChange={updateQueryLabResultMode}>
                     <TabsList className="mb-3">
@@ -1689,16 +1494,16 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                     </TabsList>
                   </Tabs>
                   <div className="text-center text-xs text-muted-foreground">
-                    No record matched this {previewMutation.data.operation} query.
+                    No record matched this {queryLabResultViewModel.operation} query.
                   </div>
                   <pre
                     aria-label="Query Lab JSON result"
                     className="mt-3 max-h-72 overflow-auto rounded-md border border-border bg-panel p-3 font-mono text-[11px] text-code"
                   >
-                    {formatJsonBlock(previewResult)}
+                    {queryLabResultViewModel.json}
                   </pre>
                 </div>
-              ) : canShowResultTable ? (
+              ) : queryLabResultViewModel.kind === "rows" ? (
                 <div>
                   <div className="sticky top-0 z-10 border-b border-border bg-surface px-3 py-2">
                     <Tabs value={resultMode} onValueChange={updateQueryLabResultMode}>
@@ -1733,7 +1538,7 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                     >
                       <thead className="sticky top-10 bg-panel">
                         <tr>
-                          {rowColumns.map((column) => (
+                          {queryLabResultViewModel.columns.map((column) => (
                             <th
                               key={column}
                               className="min-w-[150px] border-b border-r border-border px-3 py-2 font-medium text-muted-foreground last:border-r-0"
@@ -1744,11 +1549,15 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                         </tr>
                       </thead>
                       <tbody>
-                        {(resultRows as Record<string, unknown>[]).map((row, index) => (
+                        {queryLabResultViewModel.rows.map((row, index) => (
                           <tr
                             key={index}
                             aria-label={`Select Query Lab result row ${index + 1}`}
-                            aria-selected={selectedResultRowIndex === index ? "true" : undefined}
+                            aria-selected={
+                              queryLabResultViewModel.selectedRowIndex === index
+                                ? "true"
+                                : undefined
+                            }
                             tabIndex={0}
                             onClick={() => setSelectedResultRowIndex(index)}
                             onKeyDown={(event) => {
@@ -1759,10 +1568,10 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                             }}
                             className={cn(
                               "h-10 cursor-pointer border-b border-border outline-none hover:bg-elevated/70 focus:bg-elevated/70",
-                              selectedResultRowIndex === index && "bg-elevated",
+                              queryLabResultViewModel.selectedRowIndex === index && "bg-elevated",
                             )}
                           >
-                            {rowColumns.map((column) => (
+                            {queryLabResultViewModel.columns.map((column) => (
                               <td
                                 key={column}
                                 className="min-w-[150px] border-r border-border px-3 py-1.5 last:border-r-0"
@@ -1784,21 +1593,21 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                       aria-label="Query Lab JSON result"
                       className="m-3 overflow-auto rounded-md border border-border bg-panel p-3 font-mono text-[11px] text-code"
                     >
-                      {formatJsonBlock(previewResult)}
+                      {queryLabResultViewModel.resultJson}
                     </pre>
                   )}
                 </div>
-              ) : (
+              ) : queryLabResultViewModel.kind === "jsonOnly" ? (
                 <pre
                   aria-label="Query Lab JSON result"
                   className="m-3 overflow-auto rounded-md border border-border bg-panel p-3 font-mono text-[11px] text-code"
                 >
-                  {formatJsonBlock(previewResult)}
+                  {queryLabResultViewModel.json}
                 </pre>
-              )}
+              ) : null}
             </div>
 
-            {previewMutation.data && canShowResultTable ? (
+            {queryLabResultViewModel.kind === "rows" ? (
               <section
                 aria-label="Query Lab record preview"
                 className="border-t border-border bg-panel px-3 py-3"
@@ -1807,13 +1616,14 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                   <div>
                     <h2 className="text-sm font-semibold">Record Preview</h2>
                     <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
-                      Row {selectedResultRowIndex + 1} of {resultRows.length}
+                      Row {queryLabResultViewModel.selectedRowIndex + 1} of{" "}
+                      {queryLabResultViewModel.rows.length}
                     </p>
                   </div>
                 </div>
                 <RecordPreview
-                  record={selectedResultRow}
-                  fields={selectedResultFields}
+                  record={queryLabResultViewModel.selectedRow}
+                  fields={queryLabResultViewModel.selectedFields}
                   previewMode={recordPreviewMode}
                   onPreviewModeChange={updateQueryLabPreviewMode}
                   emptyMessage="Select a Query Lab result row to inspect the full record."
@@ -1821,7 +1631,7 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
               </section>
             ) : null}
 
-            {previewMutation.data ? (
+            {queryInspector ? (
               <section
                 aria-label="Query Inspector"
                 className="border-t border-border bg-panel px-3 py-3"
@@ -1830,14 +1640,14 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                   <div>
                     <h2 className="text-sm font-semibold">Query Inspector</h2>
                     <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
-                      {previewMutation.data.model}.{previewMutation.data.operation}
+                      {queryInspector.title}
                     </p>
                   </div>
                   <Button
                     type="button"
                     variant="outline"
                     onClick={() => {
-                      void navigator.clipboard?.writeText(inspectorPrismaCall);
+                      void navigator.clipboard?.writeText(queryInspector.prismaCall);
                     }}
                     aria-label="Copy Prisma Client call"
                   >
@@ -1855,14 +1665,12 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                       aria-label="Normalized Query Lab args"
                       className="max-h-72 overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-[11px] text-code"
                     >
-                      {formatJsonBlock(inspectorArgs ?? {})}
+                      {queryInspector.normalizedArgsJson}
                     </pre>
-                    {(previewMutation.data.normalization?.length ?? 0) > 0 ? (
+                    {queryInspector.normalizationMessages.length > 0 ? (
                       <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
-                        {previewMutation.data.normalization?.map((item) => (
-                          <li key={`${item.action}-${item.path}`}>
-                            {describeQueryLabNormalization(item)}
-                          </li>
+                        {queryInspector.normalizationMessages.map((message) => (
+                          <li key={message}>{message}</li>
                         ))}
                       </ul>
                     ) : (
@@ -1880,7 +1688,7 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                       aria-label="Prisma Client call"
                       className="max-h-72 overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-[11px] text-code"
                     >
-                      {inspectorPrismaCall}
+                      {queryInspector.prismaCall}
                     </pre>
                   </div>
                 </div>
@@ -1894,7 +1702,7 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                       aria-label="Query Lab duration"
                       className="rounded-md border border-border bg-surface p-3 font-mono text-[11px] text-code"
                     >
-                      {formatDuration(previewMutation.data.timing?.durationMs)}
+                      {queryInspector.durationLabel}
                     </div>
                   </div>
 
@@ -1906,18 +1714,12 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                       aria-label="Query Lab safety limits"
                       className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-md border border-border bg-surface p-3 font-mono text-[11px] text-code"
                     >
-                      <dt className="text-muted-foreground">Args depth</dt>
-                      <dd>
-                        {previewMutation.data.safetyLimits?.argsDepth ?? "Not available"} /{" "}
-                        {previewMutation.data.safetyLimits?.maxArgsDepth ?? "Not available"}
-                      </dd>
-                      <dt className="text-muted-foreground">Timeout</dt>
-                      <dd>{previewMutation.data.safetyLimits?.timeoutMs ?? "Not available"} ms</dd>
-                      <dt className="text-muted-foreground">Response size</dt>
-                      <dd>
-                        {formatBytes(previewMutation.data.safetyLimits?.responseSizeBytes)} /{" "}
-                        {formatBytes(previewMutation.data.safetyLimits?.maxResponseBytes)}
-                      </dd>
+                      {queryInspector.safetyLimits.map((limit) => (
+                        <Fragment key={limit.label}>
+                          <dt className="text-muted-foreground">{limit.label}</dt>
+                          <dd>{limit.value}</dd>
+                        </Fragment>
+                      ))}
                     </dl>
                   </div>
 
@@ -1925,12 +1727,12 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                     <div className="mb-1 text-xs font-medium text-muted-foreground">
                       Warnings
                     </div>
-                    {(previewMutation.data.warnings?.length ?? 0) > 0 ? (
+                    {queryInspector.warnings.length > 0 ? (
                       <ul
                         aria-label="Query Lab warnings"
                         className="space-y-2 rounded-md border border-warning/40 bg-surface p-3 text-xs"
                       >
-                        {previewMutation.data.warnings?.map((warning, index) => (
+                        {queryInspector.warnings.map((warning, index) => (
                           <li
                             key={`${warning.code ?? "warning"}-${warning.path ?? index}`}
                             className="flex gap-2"
@@ -1964,19 +1766,17 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                     <div className="mb-1 text-xs font-medium text-muted-foreground">
                       SQL Events
                     </div>
-                    {sqlEvents.length > 0 ? (
+                    {queryInspector.sqlEvents.length > 0 ? (
                       <div aria-label="Query Lab SQL events" className="space-y-2">
-                        {sqlEvents.map((event, index) => (
+                        {queryInspector.sqlEvents.map((event, index) => (
                           <div
                             key={index}
                             className="rounded-md border border-border bg-surface p-3"
                           >
                             <div className="mb-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-                              <span className="font-mono">SQL #{index + 1}</span>
-                              {event.durationMs !== undefined ? (
-                                <span className="font-mono">
-                                  {formatDuration(event.durationMs)}
-                                </span>
+                              <span className="font-mono">{event.label}</span>
+                              {event.durationLabel ? (
+                                <span className="font-mono">{event.durationLabel}</span>
                               ) : null}
                             </div>
                             {event.query ? (
