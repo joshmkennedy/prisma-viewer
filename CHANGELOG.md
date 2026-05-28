@@ -1,5 +1,11 @@
 # prisma-pad
 
+## 0.1.3
+
+### Patch Changes
+
+- Fix packaged CLI startup by avoiding a runtime `vitest` import from the published Vite config.
+
 ## 0.1.2
 
 ### Patch Changes
