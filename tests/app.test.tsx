@@ -145,6 +145,7 @@ describe("App model sidebar", () => {
 describe("App Query Lab", () => {
   afterEach(() => {
     cleanup();
+    window.localStorage.clear();
     vi.clearAllMocks();
     vi.unstubAllGlobals();
   });
@@ -660,6 +661,105 @@ describe("App Query Lab", () => {
     await waitFor(() => expect(window.location.pathname).toBe("/query-lab/Post"));
     expect(await screen.findByRole("heading", { name: "Query Lab" })).toBeTruthy();
     expect(screen.getByLabelText("Query Lab model")).toHaveProperty("value", "Post");
+  });
+
+  it("saves, reopens, renames, and deletes local Query Lab views", async () => {
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email"]), model("Post", ["id", "title"])],
+      rowsByModel: {},
+      previewResultsByOperation: {
+        findFirst: { id: "post_1", title: "Saved view result" },
+      },
+    });
+
+    const { unmount } = renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await waitFor(() =>
+      expect(screen.getByLabelText("Query Lab model")).toHaveProperty("value", "User"),
+    );
+    await userEvent.selectOptions(screen.getByLabelText("Query Lab model"), "Post");
+    await userEvent.selectOptions(screen.getByLabelText("Query Lab operation"), "findFirst");
+
+    const argsSource = '{"where":{"id":"post_1"},"select":{"id":true,"title":true}}';
+    fireEvent.input(screen.getByLabelText("Args Mode editor"), {
+      currentTarget: { textContent: argsSource },
+      target: { textContent: argsSource },
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+    expect(await screen.findByRole("table", { name: "Query Lab table result" })).toBeTruthy();
+    await userEvent.click(screen.getAllByRole("button", { name: "JSON" })[0]);
+
+    await userEvent.type(screen.getByLabelText("Saved Query Lab view name"), "Post lookup");
+    await userEvent.click(screen.getByRole("button", { name: "Save Query Lab view" }));
+
+    const storageKey = "prisma-viewer.query-lab.saved-views.v1";
+    const savedViews = JSON.parse(window.localStorage.getItem(storageKey) ?? "[]") as Array<{
+      name?: string;
+      argsSource?: string;
+      resultMode?: string;
+    }>;
+    expect(savedViews[0]).toMatchObject({
+      name: "Post lookup",
+      argsSource,
+      resultMode: "json",
+    });
+
+    unmount();
+    renderApp("/query-lab");
+
+    expect(
+      await screen.findByRole("button", { name: "Open saved Query Lab view Post lookup" }),
+    ).toBeTruthy();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Open saved Query Lab view Post lookup" }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Query Lab model")).toHaveProperty("value", "Post"),
+    );
+    expect(screen.getByLabelText("Query Lab operation")).toHaveProperty("value", "findFirst");
+    expect(screen.getByLabelText("Args Mode editor").textContent).toBe(argsSource);
+
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/query-lab/preview",
+        expect.objectContaining({
+          body: JSON.stringify({
+            model: "Post",
+            operation: "findFirst",
+            argsSource,
+          }),
+        }),
+      );
+    });
+    expect(await screen.findByLabelText("Query Lab JSON result")).toBeTruthy();
+    expect(screen.queryByRole("table", { name: "Query Lab table result" })).toBeNull();
+
+    vi.stubGlobal("prompt", vi.fn(() => "Published post lookup"));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Rename saved Query Lab view Post lookup" }),
+    );
+    expect(
+      await screen.findByRole("button", {
+        name: "Open saved Query Lab view Published post lookup",
+      }),
+    ).toBeTruthy();
+    expect(window.localStorage.getItem(storageKey)).toContain("Published post lookup");
+
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "Delete saved Query Lab view Published post lookup",
+      }),
+    );
+    expect(
+      screen.queryByRole("button", {
+        name: "Open saved Query Lab view Published post lookup",
+      }),
+    ).toBeNull();
+    expect(window.localStorage.getItem(storageKey)).toBe("[]");
   });
 });
 

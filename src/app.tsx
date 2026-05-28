@@ -37,11 +37,14 @@ import {
   Database,
   FileJson,
   Filter,
+  Pencil,
   Play,
   Plus,
   RefreshCcw,
   Search,
   TableProperties,
+  Save,
+  Trash2,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -118,6 +121,17 @@ type PreviewMode = "fields" | "json";
 type QueryLabResultMode = "table" | "json";
 type FilterOperator = "contains" | "equals" | "startsWith" | "endsWith" | "empty" | "notEmpty";
 type QueryLabOperation = "findMany" | "findFirst" | "findUnique" | "count";
+
+type SavedQueryLabView = {
+  id: string;
+  name: string;
+  model: string;
+  operation: QueryLabOperation;
+  argsSource: string;
+  resultMode: QueryLabResultMode;
+  recordPreviewMode: PreviewMode;
+  updatedAt: string;
+};
 
 type QueryLabArgsNormalization =
   | {
@@ -196,6 +210,7 @@ const DEFAULT_TABLE_PAGE_SIZE = 100;
 const TABLE_PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
 const ROWS_QUERY_KEY = "modelRows";
 const QUERY_LAB_DEFAULT_ARGS = "{\n  take: 25\n}";
+const QUERY_LAB_SAVED_VIEWS_STORAGE_KEY = "prisma-viewer.query-lab.saved-views.v1";
 const QUERY_LAB_OPERATIONS: QueryLabOperation[] = [
   "findMany",
   "findFirst",
@@ -527,6 +542,77 @@ function isQueryLabOperation(value: unknown): value is QueryLabOperation {
   );
 }
 
+function isQueryLabResultMode(value: unknown): value is QueryLabResultMode {
+  return value === "table" || value === "json";
+}
+
+function isPreviewMode(value: unknown): value is PreviewMode {
+  return value === "fields" || value === "json";
+}
+
+function loadSavedQueryLabViews(): SavedQueryLabView[] {
+  if (typeof window === "undefined") return [];
+
+  try {
+    const rawValue = window.localStorage.getItem(QUERY_LAB_SAVED_VIEWS_STORAGE_KEY);
+    if (!rawValue) return [];
+    const parsed = JSON.parse(rawValue) as unknown;
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .map((item) => {
+        if (!item || typeof item !== "object") return null;
+        const candidate = item as Partial<SavedQueryLabView>;
+        if (
+          typeof candidate.id !== "string" ||
+          typeof candidate.name !== "string" ||
+          typeof candidate.model !== "string" ||
+          !isQueryLabOperation(candidate.operation) ||
+          typeof candidate.argsSource !== "string"
+        ) {
+          return null;
+        }
+
+        return {
+          id: candidate.id,
+          name: candidate.name.trim() || "Untitled view",
+          model: candidate.model,
+          operation: candidate.operation,
+          argsSource: candidate.argsSource,
+          resultMode: isQueryLabResultMode(candidate.resultMode)
+            ? candidate.resultMode
+            : "table",
+          recordPreviewMode: isPreviewMode(candidate.recordPreviewMode)
+            ? candidate.recordPreviewMode
+            : "fields",
+          updatedAt:
+            typeof candidate.updatedAt === "string"
+              ? candidate.updatedAt
+              : new Date(0).toISOString(),
+        };
+      })
+      .filter((item): item is SavedQueryLabView => item !== null);
+  } catch {
+    return [];
+  }
+}
+
+function persistSavedQueryLabViews(savedViews: SavedQueryLabView[]) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(
+    QUERY_LAB_SAVED_VIEWS_STORAGE_KEY,
+    JSON.stringify(savedViews),
+  );
+}
+
+function createSavedQueryLabViewId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+
+  return `view-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 function isRowObject(row: unknown): row is Record<string, unknown> {
   return typeof row === "object" && row !== null && !Array.isArray(row);
 }
@@ -847,6 +933,11 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
   const [resultMode, setResultMode] = useState<QueryLabResultMode>("table");
   const [selectedResultRowIndex, setSelectedResultRowIndex] = useState(0);
   const [recordPreviewMode, setRecordPreviewMode] = useState<PreviewMode>("fields");
+  const [savedViews, setSavedViews] = useState<SavedQueryLabView[]>(() =>
+    loadSavedQueryLabViews(),
+  );
+  const [savedViewName, setSavedViewName] = useState("");
+  const [currentSavedViewId, setCurrentSavedViewId] = useState<string | null>(null);
 
   const modelQuery = useQuery({
     queryKey: ["models"],
@@ -858,6 +949,12 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
     models.find((model) => model.name === selectedModelNameOrDefault) ?? null;
   const hasStaleRouteModel =
     Boolean(initialModelName) && modelQuery.isSuccess && !selectedModel;
+  const hasUnavailableSelectedModel =
+    Boolean(selectedModelName) && modelQuery.isSuccess && !selectedModel;
+
+  useEffect(() => {
+    persistSavedQueryLabViews(savedViews);
+  }, [savedViews]);
 
   useEffect(() => {
     if (!selectedModelName && models[0]) {
@@ -886,6 +983,67 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
         argsSource,
       }),
   });
+
+  function saveQueryLabView() {
+    const name = savedViewName.trim();
+    if (!name || !selectedModel) return;
+
+    const now = new Date().toISOString();
+    const id = currentSavedViewId ?? createSavedQueryLabViewId();
+    const view: SavedQueryLabView = {
+      id,
+      name,
+      model: selectedModel.name,
+      operation,
+      argsSource,
+      resultMode,
+      recordPreviewMode,
+      updatedAt: now,
+    };
+
+    setSavedViews((currentViews) => {
+      const existingIndex = currentViews.findIndex((item) => item.id === id);
+      if (existingIndex === -1) return [view, ...currentViews];
+      return currentViews.map((item) => (item.id === id ? view : item));
+    });
+    setCurrentSavedViewId(id);
+  }
+
+  function openSavedQueryLabView(view: SavedQueryLabView) {
+    setSelectedModelName(view.model);
+    setOperation(view.operation);
+    setArgsSource(view.argsSource);
+    setResultMode(view.resultMode);
+    setRecordPreviewMode(view.recordPreviewMode);
+    setSelectedResultRowIndex(0);
+    setSavedViewName(view.name);
+    setCurrentSavedViewId(view.id);
+    previewMutation.reset();
+  }
+
+  function renameSavedQueryLabView(view: SavedQueryLabView) {
+    const nextName = window.prompt("Rename saved Query Lab view", view.name)?.trim();
+    if (!nextName) return;
+
+    setSavedViews((currentViews) =>
+      currentViews.map((item) =>
+        item.id === view.id
+          ? { ...item, name: nextName, updatedAt: new Date().toISOString() }
+          : item,
+      ),
+    );
+    if (currentSavedViewId === view.id) {
+      setSavedViewName(nextName);
+    }
+  }
+
+  function deleteSavedQueryLabView(view: SavedQueryLabView) {
+    setSavedViews((currentViews) => currentViews.filter((item) => item.id !== view.id));
+    if (currentSavedViewId === view.id) {
+      setCurrentSavedViewId(null);
+      setSavedViewName("");
+    }
+  }
 
   const previewResult = previewMutation.data
     ? previewMutation.data.result !== undefined
@@ -929,7 +1087,6 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
 
   useEffect(() => {
     setSelectedResultRowIndex(0);
-    setResultMode("table");
   }, [previewMutation.data]);
 
   function updateQueryLabResultMode(value: string) {
@@ -1030,6 +1187,96 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                 ))}
               </select>
             </label>
+
+            <section
+              aria-label="Saved Query Lab views"
+              className="mt-3 rounded-md border border-border bg-surface p-2"
+            >
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h3 className="text-xs font-semibold text-foreground">Saved Views</h3>
+                <span className="font-mono text-[10px] text-muted-foreground">
+                  {savedViews.length}
+                </span>
+              </div>
+              <div className="flex gap-1.5">
+                <input
+                  value={savedViewName}
+                  onChange={(event) => setSavedViewName(event.target.value)}
+                  aria-label="Saved Query Lab view name"
+                  placeholder="View name"
+                  className="h-8 min-w-0 flex-1 rounded-md border border-input bg-elevated px-2 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-ring"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={saveQueryLabView}
+                  disabled={!selectedModel || savedViewName.trim().length === 0}
+                  aria-label="Save Query Lab view"
+                >
+                  <Save className="h-3.5 w-3.5" aria-hidden="true" />
+                  Save
+                </Button>
+              </div>
+              {savedViews.length > 0 ? (
+                <ul className="mt-2 max-h-44 space-y-1 overflow-auto">
+                  {savedViews.map((view) => {
+                    const viewModelIsAvailable = models.some(
+                      (model) => model.name === view.model,
+                    );
+                    return (
+                      <li
+                        key={view.id}
+                        className={cn(
+                          "rounded-md border border-border bg-panel px-2 py-1.5",
+                          currentSavedViewId === view.id && "border-primary/60",
+                        )}
+                      >
+                        <div className="flex items-start gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => openSavedQueryLabView(view)}
+                            aria-label={`Open saved Query Lab view ${view.name}`}
+                            className="min-w-0 flex-1 text-left"
+                          >
+                            <span className="block truncate text-xs font-medium text-foreground">
+                              {view.name}
+                            </span>
+                            <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">
+                              {view.model}.{view.operation}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => renameSavedQueryLabView(view)}
+                            aria-label={`Rename saved Query Lab view ${view.name}`}
+                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-elevated hover:text-foreground"
+                          >
+                            <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteSavedQueryLabView(view)}
+                            aria-label={`Delete saved Query Lab view ${view.name}`}
+                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-danger/10 hover:text-danger"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          </button>
+                        </div>
+                        {!viewModelIsAvailable && modelQuery.isSuccess ? (
+                          <p className="mt-1 text-[10px] text-warning">
+                            Saved model is not in current metadata.
+                          </p>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : (
+                <p className="mt-2 text-[11px] text-muted-foreground">
+                  Save local Query Lab views for this browser.
+                </p>
+              )}
+            </section>
           </div>
 
           <div className="min-h-0 flex-1 overflow-auto p-3 text-xs text-muted-foreground">
@@ -1046,12 +1293,12 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                     : "Could not load Prisma model metadata."}
                 </p>
               </div>
-            ) : hasStaleRouteModel ? (
+            ) : hasStaleRouteModel || hasUnavailableSelectedModel ? (
               <div className="rounded-md border border-dashed border-border bg-surface p-3">
                 <p className="font-medium text-foreground">Model not found.</p>
                 <p className="mt-1">
-                  Model "{initialModelName}" is no longer available. Select a valid model to
-                  continue.
+                  Model "{initialModelName ?? selectedModelName}" is no longer available. Select a
+                  valid model to continue.
                 </p>
               </div>
             ) : selectedModel ? (
