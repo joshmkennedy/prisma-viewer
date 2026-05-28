@@ -42,6 +42,7 @@ import {
   RefreshCcw,
   Search,
   TableProperties,
+  TriangleAlert,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -83,6 +84,7 @@ type QueryLabPreviewResponse = {
   args: Record<string, unknown>;
   normalizedArgs?: Record<string, unknown>;
   normalization?: QueryLabArgsNormalization[];
+  warnings?: QueryLabWarning[];
   safetyLimits?: QueryLabSafetyLimits;
   prismaCall?: string;
   timing?: {
@@ -143,6 +145,12 @@ type QueryLabSqlEvent = {
   query?: string;
   params?: string;
   durationMs?: number;
+};
+
+type QueryLabWarning = {
+  code?: string;
+  path?: string;
+  message: string;
 };
 
 type TableFilter = {
@@ -1136,6 +1144,45 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                         {formatBytes(previewMutation.data.safetyLimits?.maxResponseBytes)}
                       </dd>
                     </dl>
+                  </div>
+
+                  <div className="min-w-0">
+                    <div className="mb-1 text-xs font-medium text-muted-foreground">
+                      Warnings
+                    </div>
+                    {(previewMutation.data.warnings?.length ?? 0) > 0 ? (
+                      <ul
+                        aria-label="Query Lab warnings"
+                        className="space-y-2 rounded-md border border-warning/40 bg-surface p-3 text-xs"
+                      >
+                        {previewMutation.data.warnings?.map((warning, index) => (
+                          <li
+                            key={`${warning.code ?? "warning"}-${warning.path ?? index}`}
+                            className="flex gap-2"
+                          >
+                            <TriangleAlert
+                              className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning"
+                              aria-hidden="true"
+                            />
+                            <div className="min-w-0">
+                              {warning.path ? (
+                                <div className="font-mono text-[11px] text-muted-foreground">
+                                  {warning.path}
+                                </div>
+                              ) : null}
+                              <div className="text-foreground">{warning.message}</div>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div
+                        aria-label="Query Lab warnings"
+                        className="rounded-md border border-dashed border-border bg-surface p-3 text-xs text-muted-foreground"
+                      >
+                        No deterministic performance warnings for this run.
+                      </div>
+                    )}
                   </div>
 
                   <div className="min-w-0">

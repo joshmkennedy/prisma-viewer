@@ -43,6 +43,12 @@ type QueryLabSqlEvent = {
   durationMs?: number;
 };
 
+type QueryLabWarning = {
+  code?: string;
+  path?: string;
+  message: string;
+};
+
 describe("App model sidebar", () => {
   afterEach(() => {
     cleanup();
@@ -397,6 +403,39 @@ describe("App Query Lab", () => {
     );
     expect(screen.getByText("SQL text was not provided for this event.")).toBeTruthy();
     expect(screen.getByText("SQL params were not provided for this event.")).toBeTruthy();
+  });
+
+  it("renders Query Lab performance warnings in the inspector", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: [{ id: "user_1", email: "ada@example.com" }],
+      },
+      queryLabDiagnostics: {
+        warnings: [
+          {
+            code: "NON_UNIQUE_FILTER",
+            path: "where.email",
+            message:
+              "where.email filters on User.email, which is not marked id or unique in Prisma metadata. This may scan more rows than expected.",
+          },
+        ],
+      },
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    const warnings = await screen.findByLabelText("Query Lab warnings");
+    expect(within(warnings).getByText("where.email")).toBeTruthy();
+    expect(
+      within(warnings).getByText(
+        "where.email filters on User.email, which is not marked id or unique in Prisma metadata. This may scan more rows than expected.",
+      ),
+    ).toBeTruthy();
   });
 
   it("shows Query Lab loading and error states", async () => {
@@ -1404,6 +1443,7 @@ function mockApiResponses({
   queryLabDiagnostics?: {
     timing?: { durationMs?: number };
     sql?: { events?: QueryLabSqlEvent[] };
+    warnings?: QueryLabWarning[];
   };
 }) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1462,6 +1502,7 @@ function mockApiResponses({
             args: normalized.args,
             normalizedArgs: normalized.args,
             normalization: normalized.normalization,
+            warnings: queryLabDiagnostics.warnings ?? [],
             safetyLimits: {
               maxArgsDepth: 8,
               timeoutMs: 5000,

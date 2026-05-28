@@ -802,6 +802,14 @@ describe("createPrismaApiMiddleware", () => {
           value: 50,
         },
       ],
+      warnings: [
+        {
+          code: "FIND_MANY_DEFAULT_TAKE",
+          path: "take",
+          message:
+            "findMany did not include an explicit take, so Query Lab applied the default preview cap.",
+        },
+      ],
       safetyLimits: {
         maxArgsDepth: 8,
         timeoutMs: 5000,
@@ -934,6 +942,7 @@ describe("createPrismaApiMiddleware", () => {
       args: expectedArgs,
       normalizedArgs: expectedArgs,
       normalization: [],
+      warnings: [],
       safetyLimits: {
         maxArgsDepth: 8,
         timeoutMs: 5000,
@@ -990,6 +999,7 @@ describe("createPrismaApiMiddleware", () => {
         args: { where: { id: "missing" } },
         normalizedArgs: { where: { id: "missing" } },
         normalization: [],
+        warnings: [],
         safetyLimits: {
           maxArgsDepth: 8,
           timeoutMs: 5000,
@@ -1073,6 +1083,133 @@ describe("createPrismaApiMiddleware", () => {
     });
     expect(JSON.parse(response.body).prismaCall).toContain("prisma.user.findMany");
     expect(JSON.parse(response.body).prismaCall).toContain("take: 100");
+  });
+
+  it("returns deterministic Query Lab performance warnings from validated args", async () => {
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [
+                field({ name: "id", type: "String", isId: true }),
+                field({ name: "email", type: "String", isUnique: true }),
+                field({ name: "name", type: "String" }),
+                field({ name: "createdAt", type: "DateTime" }),
+                field({ name: "posts", kind: "object", type: "Post", isList: true }),
+              ],
+            },
+            Post: {
+              name: "Post",
+              fields: [
+                field({ name: "id", type: "String", isId: true }),
+                field({ name: "title", type: "String" }),
+              ],
+            },
+          },
+        },
+        user: {
+          findMany: async () => [],
+        },
+      },
+      disconnect: async () => undefined,
+    });
+
+    const response = await runMiddlewareWithJsonBody(
+      middleware,
+      { method: "POST", url: "/api/query-lab/preview" },
+      {
+        model: "User",
+        operation: "findMany",
+        argsSource: `{
+          where: { name: { contains: "Ada" }, email: "ada@example.com" },
+          include: { posts: true },
+          orderBy: [{ createdAt: "desc" }],
+          skip: 1500
+        }`,
+      },
+    );
+
+    expect(response.statusCode).toBe(200);
+    const warnings = JSON.parse(response.body).warnings;
+    expect(warnings).toEqual([
+      {
+        code: "FIND_MANY_DEFAULT_TAKE",
+        path: "take",
+        message:
+          "findMany did not include an explicit take, so Query Lab applied the default preview cap.",
+      },
+      {
+        code: "BROAD_SCALAR_SELECT",
+        path: "select",
+        message:
+          "User returns all 4 scalar fields by default. Add a narrower select to reduce payload size.",
+      },
+      {
+        code: "UNBOUNDED_INCLUDE",
+        path: "include.posts",
+        message:
+          "include.posts includes a list relation without a nested take. Add a nested take to limit relation fanout.",
+      },
+      {
+        code: "LARGE_SKIP",
+        path: "skip",
+        message:
+          "skip is 1500. Large offset pagination can become slow; prefer a cursor or a more selective filter when possible.",
+      },
+      {
+        code: "NON_UNIQUE_FILTER",
+        path: "where.name",
+        message:
+          "where.name filters on User.name, which is not marked id or unique in Prisma metadata. This may scan more rows than expected.",
+      },
+      {
+        code: "NON_UNIQUE_SORT",
+        path: "orderBy.0.createdAt",
+        message:
+          "orderBy.0.createdAt sorts by User.createdAt, which is not marked id or unique in Prisma metadata. Sorting on non-unique fields may require extra database work.",
+      },
+    ]);
+  });
+
+  it("warns when Query Lab explicitly selects every scalar field", async () => {
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [
+                field({ name: "id", type: "String", isId: true }),
+                field({ name: "email", type: "String" }),
+              ],
+            },
+          },
+        },
+        user: {
+          findMany: async () => [],
+        },
+      },
+      disconnect: async () => undefined,
+    });
+
+    const response = await runMiddlewareWithJsonBody(
+      middleware,
+      { method: "POST", url: "/api/query-lab/preview" },
+      {
+        model: "User",
+        operation: "findMany",
+        argsSource: "{ select: { id: true, email: true }, take: 10 }",
+      },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).warnings).toContainEqual({
+      code: "BROAD_SCALAR_SELECT",
+      path: "select",
+      message: "User selects all 2 scalar fields. A narrower select can reduce payload size.",
+    });
   });
 
   it("rejects Query Lab args that exceed the maximum nesting depth before reaching delegates", async () => {

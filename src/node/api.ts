@@ -12,6 +12,7 @@ import {
   withQueryLabTimeout,
 } from "./query-lab-safety.js";
 import { validateQueryLabArgs, type QueryLabOperation } from "./query-lab-validation.js";
+import { analyzeQueryLabWarnings } from "./query-lab-warnings.js";
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
@@ -245,6 +246,13 @@ async function handleQueryLabPreviewRequest(
     operation === "findMany"
       ? normalizeFindManyArgs(validatedArgs.args)
       : { args: validatedArgs.args, normalization: [] };
+  const warnings = analyzeQueryLabWarnings({
+    metadata,
+    model,
+    operation,
+    args: normalized.args,
+    normalization: normalized.normalization,
+  });
   const safetyLimits = {
     ...QUERY_LAB_SAFETY_LIMITS,
     argsDepth: argsDepth.depth,
@@ -287,6 +295,7 @@ async function handleQueryLabPreviewRequest(
       args: normalized.args,
       normalizedArgs: normalized.args,
       normalization: normalized.normalization,
+      warnings,
       safetyLimits: {
         ...safetyLimits,
         responseSizeBytes: responseSize.bytes,
