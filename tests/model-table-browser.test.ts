@@ -7,7 +7,7 @@ import {
   validateModelRouteSearch,
   type TableFilter,
 } from "../src/model-table-browser";
-import type { Field, Model } from "../src/query-lab-result-presenter";
+import type { Field, Model } from "../src/domain/prisma-metadata";
 
 describe("model table browser route state", () => {
   it("degrades invalid route search values to safe canonical state", () => {
