@@ -2,7 +2,7 @@ import { formatApiError } from "./prisma-viewer-client";
 import type {
   QueryLabOperation,
   QueryLabPreviewResponse,
-} from "../query-lab-result-presenter";
+} from "../features/query-lab/query-lab-result-presenter";
 
 export async function previewQueryLab(
   payload: {

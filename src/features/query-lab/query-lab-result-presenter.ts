@@ -1,15 +1,15 @@
-import type { Field, Model } from "./domain/prisma-metadata";
+import type { Field, Model } from "../../domain/prisma-metadata";
 import {
   formatBytes,
   formatDuration,
   formatJsonBlock,
   formatValue,
-} from "./domain/row-formatting";
+} from "../../domain/row-formatting";
 import {
   fieldsForRecord,
   formatRecordPreviewJson,
   type PreviewMode,
-} from "./features/record-preview/record-preview-model";
+} from "../record-preview/record-preview-model";
 
 export type QueryLabResultMode = "table" | "json";
 export type QueryLabOperation = "findMany" | "findFirst" | "findUnique" | "count";
@@ -20,6 +20,12 @@ export const QUERY_LAB_OPERATIONS: QueryLabOperation[] = [
   "findUnique",
   "count",
 ];
+
+export function isQueryLabOperation(value: unknown): value is QueryLabOperation {
+  return (
+    typeof value === "string" && QUERY_LAB_OPERATIONS.includes(value as QueryLabOperation)
+  );
+}
 
 export type QueryLabArgsNormalization =
   | {

@@ -3,7 +3,7 @@ import {
   createQueryLabResultViewModel,
   type QueryLabOperation,
   type QueryLabPreviewResponse,
-} from "../src/query-lab-result-presenter";
+} from "../src/features/query-lab/query-lab-result-presenter";
 import type { Field, Model } from "../src/domain/prisma-metadata";
 import { formatJsonBlock, formatValue } from "../src/domain/row-formatting";
 
