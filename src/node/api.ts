@@ -4,6 +4,13 @@ import type { PrismaFieldMetadata, PrismaModelMetadata } from "./metadata.js";
 import { MetadataError, discoverPrismaMetadata } from "./metadata.js";
 import type { PrismaRuntime } from "./prisma.js";
 import { parseQueryLabArgsSource } from "./query-lab-args.js";
+import {
+  QUERY_LAB_SAFETY_LIMITS,
+  QueryLabTimeoutError,
+  measureSerializedPayload,
+  validateQueryLabArgsDepth,
+  withQueryLabTimeout,
+} from "./query-lab-safety.js";
 import { validateQueryLabArgs, type QueryLabOperation } from "./query-lab-validation.js";
 
 const DEFAULT_PAGE_SIZE = 50;
@@ -48,6 +55,7 @@ type ApiErrorCode =
   | "METADATA_UNAVAILABLE"
   | "MODEL_NOT_FOUND"
   | "OPERATION_NOT_SUPPORTED"
+  | "QUERY_LAB_SAFETY_LIMIT"
   | "ROWS_UNAVAILABLE";
 
 type MiddlewareNext = (error?: unknown) => void;
@@ -211,6 +219,17 @@ async function handleQueryLabPreviewRequest(
     return;
   }
 
+  const argsDepth = validateQueryLabArgsDepth(validatedArgs.args);
+  if ("error" in argsDepth) {
+    sendJson(response, 400, {
+      error: {
+        code: "QUERY_LAB_SAFETY_LIMIT",
+        message: argsDepth.error,
+      },
+    });
+    return;
+  }
+
   const delegate = prismaRuntime.client[delegateNameForModel(model.name)];
   if (!isQueryLabDelegate(delegate, operation)) {
     sendJson(response, 500, {
@@ -226,21 +245,52 @@ async function handleQueryLabPreviewRequest(
     operation === "findMany"
       ? normalizeFindManyArgs(validatedArgs.args)
       : { args: validatedArgs.args, normalization: [] };
+  const safetyLimits = {
+    ...QUERY_LAB_SAFETY_LIMITS,
+    argsDepth: argsDepth.depth,
+  };
   const prismaCall = formatPrismaClientCall(model.name, operation, normalized.args);
   const queryEventRecorder = getQueryEventRecorder(prismaRuntime.client);
   const queryEventStartIndex = queryEventRecorder.events.length;
   const startedAt = performance.now();
 
   try {
-    const result = await delegate[operation](normalized.args);
+    const result = await withQueryLabTimeout(
+      delegate[operation](normalized.args),
+      QUERY_LAB_SAFETY_LIMITS.timeoutMs,
+    );
     const durationMs = elapsedMilliseconds(startedAt);
     const sqlEvents = queryEventRecorder.events.slice(queryEventStartIndex);
+    const responseSize = measureSerializedPayload(result);
+    if ("error" in responseSize) {
+      sendJson(response, 500, {
+        error: {
+          code: "QUERY_LAB_SAFETY_LIMIT",
+          message: responseSize.error,
+        },
+      });
+      return;
+    }
+    if (responseSize.bytes > QUERY_LAB_SAFETY_LIMITS.maxResponseBytes) {
+      sendJson(response, 413, {
+        error: {
+          code: "QUERY_LAB_SAFETY_LIMIT",
+          message: `Query Lab safety limit exceeded: serialized response size ${responseSize.bytes} bytes exceeds the maximum of ${QUERY_LAB_SAFETY_LIMITS.maxResponseBytes} bytes.`,
+        },
+      });
+      return;
+    }
+
     sendJson(response, 200, {
       model: model.name,
       operation,
       args: normalized.args,
       normalizedArgs: normalized.args,
       normalization: normalized.normalization,
+      safetyLimits: {
+        ...safetyLimits,
+        responseSizeBytes: responseSize.bytes,
+      },
       prismaCall,
       timing: {
         durationMs,
@@ -252,6 +302,16 @@ async function handleQueryLabPreviewRequest(
       rows: operation === "findMany" && Array.isArray(result) ? result : undefined,
     });
   } catch (error) {
+    if (error instanceof QueryLabTimeoutError) {
+      sendJson(response, 504, {
+        error: {
+          code: "QUERY_LAB_SAFETY_LIMIT",
+          message: error.message,
+        },
+      });
+      return;
+    }
+
     sendJson(response, 500, {
       error: {
         code: "ROWS_UNAVAILABLE",

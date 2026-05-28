@@ -325,7 +325,37 @@ describe("App Query Lab", () => {
     expect(screen.getByLabelText("Prisma Client call").textContent).toContain(
       "prisma.user.findMany",
     );
+    expect(screen.getByLabelText("Query Lab safety limits").textContent).toContain(
+      "Args depth",
+    );
+    expect(screen.getByLabelText("Query Lab safety limits").textContent).toContain(
+      "Response size",
+    );
     expect(screen.getByRole("button", { name: "Copy Prisma Client call" })).toBeTruthy();
+  });
+
+  it("shows Query Lab safety limit API errors clearly", async () => {
+    mockApiResponses({
+      models: [model("User", ["id"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: new Error(
+          "Query Lab safety limit exceeded: serialized response size 300000 bytes exceeds the maximum of 262144 bytes.",
+        ),
+      },
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    expect(await screen.findByText("Could not run preview.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Query Lab safety limit exceeded: serialized response size 300000 bytes exceeds the maximum of 262144 bytes.",
+      ),
+    ).toBeTruthy();
   });
 
   it("renders Query Lab timing, SQL, params, and missing SQL empty states", async () => {
@@ -1432,6 +1462,13 @@ function mockApiResponses({
             args: normalized.args,
             normalizedArgs: normalized.args,
             normalization: normalized.normalization,
+            safetyLimits: {
+              maxArgsDepth: 8,
+              timeoutMs: 5000,
+              maxResponseBytes: 262144,
+              argsDepth: 1,
+              responseSizeBytes: JSON.stringify(result).length,
+            },
             prismaCall: formatMockPrismaCall(body.model, operation, normalized.args),
             timing: queryLabDiagnostics.timing ?? { durationMs: 1 },
             sql: queryLabDiagnostics.sql ?? { events: [] },

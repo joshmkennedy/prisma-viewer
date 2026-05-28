@@ -83,6 +83,7 @@ type QueryLabPreviewResponse = {
   args: Record<string, unknown>;
   normalizedArgs?: Record<string, unknown>;
   normalization?: QueryLabArgsNormalization[];
+  safetyLimits?: QueryLabSafetyLimits;
   prismaCall?: string;
   timing?: {
     durationMs?: number;
@@ -129,6 +130,14 @@ type QueryLabArgsNormalization =
       originalValue: unknown;
       value: unknown;
     };
+
+type QueryLabSafetyLimits = {
+  maxArgsDepth?: number;
+  timeoutMs?: number;
+  maxResponseBytes?: number;
+  argsDepth?: number;
+  responseSizeBytes?: number;
+};
 
 type QueryLabSqlEvent = {
   query?: string;
@@ -468,6 +477,12 @@ function describeQueryLabNormalization(item: QueryLabArgsNormalization) {
   }
 
   return `${item.path}: safety default ${formatValue(item.value)} applied`;
+}
+
+function formatBytes(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "Not available";
+  if (value < 1024) return `${value} B`;
+  return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`;
 }
 
 function isQueryLabOperation(value: unknown): value is QueryLabOperation {
@@ -1098,6 +1113,29 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                     >
                       {formatDuration(previewMutation.data.timing?.durationMs)}
                     </div>
+                  </div>
+
+                  <div className="min-w-0">
+                    <div className="mb-1 text-xs font-medium text-muted-foreground">
+                      Safety Limits
+                    </div>
+                    <dl
+                      aria-label="Query Lab safety limits"
+                      className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-md border border-border bg-surface p-3 font-mono text-[11px] text-code"
+                    >
+                      <dt className="text-muted-foreground">Args depth</dt>
+                      <dd>
+                        {previewMutation.data.safetyLimits?.argsDepth ?? "Not available"} /{" "}
+                        {previewMutation.data.safetyLimits?.maxArgsDepth ?? "Not available"}
+                      </dd>
+                      <dt className="text-muted-foreground">Timeout</dt>
+                      <dd>{previewMutation.data.safetyLimits?.timeoutMs ?? "Not available"} ms</dd>
+                      <dt className="text-muted-foreground">Response size</dt>
+                      <dd>
+                        {formatBytes(previewMutation.data.safetyLimits?.responseSizeBytes)} /{" "}
+                        {formatBytes(previewMutation.data.safetyLimits?.maxResponseBytes)}
+                      </dd>
+                    </dl>
                   </div>
 
                   <div className="min-w-0">

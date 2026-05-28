@@ -1,8 +1,12 @@
 import { Readable } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPrismaApiMiddleware } from "../../src/node/api";
 import { startViewerServer } from "../../src/node/server";
 import type { StartupContext } from "../../src/node/startup";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("startViewerServer", () => {
   it("starts Vite and returns the local URL", async () => {
@@ -798,6 +802,13 @@ describe("createPrismaApiMiddleware", () => {
           value: 50,
         },
       ],
+      safetyLimits: {
+        maxArgsDepth: 8,
+        timeoutMs: 5000,
+        maxResponseBytes: 262144,
+        argsDepth: 2,
+        responseSizeBytes: expect.any(Number),
+      },
       prismaCall:
         'prisma.user.findMany({\n  where: {\n    id: "user_1"\n  },\n  take: 50\n})',
       timing: {
@@ -923,6 +934,13 @@ describe("createPrismaApiMiddleware", () => {
       args: expectedArgs,
       normalizedArgs: expectedArgs,
       normalization: [],
+      safetyLimits: {
+        maxArgsDepth: 8,
+        timeoutMs: 5000,
+        maxResponseBytes: 262144,
+        argsDepth: 2,
+        responseSizeBytes: expect.any(Number),
+      },
       prismaCall: `prisma.user.${operation}({\n  where: {\n    id: "user_1"\n  }\n})`,
       timing: {
         durationMs: expect.any(Number),
@@ -972,6 +990,13 @@ describe("createPrismaApiMiddleware", () => {
         args: { where: { id: "missing" } },
         normalizedArgs: { where: { id: "missing" } },
         normalization: [],
+        safetyLimits: {
+          maxArgsDepth: 8,
+          timeoutMs: 5000,
+          maxResponseBytes: 262144,
+          argsDepth: 2,
+          responseSizeBytes: expect.any(Number),
+        },
         prismaCall: `prisma.user.${operation}({\n  where: {\n    id: "missing"\n  }\n})`,
         timing: {
           durationMs: expect.any(Number),
@@ -1048,6 +1073,133 @@ describe("createPrismaApiMiddleware", () => {
     });
     expect(JSON.parse(response.body).prismaCall).toContain("prisma.user.findMany");
     expect(JSON.parse(response.body).prismaCall).toContain("take: 100");
+  });
+
+  it("rejects Query Lab args that exceed the maximum nesting depth before reaching delegates", async () => {
+    const delegateCalls: string[] = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [field({ name: "id", type: "String", isId: true })],
+            },
+          },
+        },
+        user: {
+          findMany: async () => {
+            delegateCalls.push("user.findMany");
+            return [];
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+
+    const response = await runMiddlewareWithJsonBody(
+      middleware,
+      { method: "POST", url: "/api/query-lab/preview" },
+      {
+        model: "User",
+        operation: "findMany",
+        argsSource:
+          "{ where: { AND: [{ AND: [{ AND: [{ AND: [{ AND: [{ id: 'user_1' }] }] }] }] }] } }",
+      },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(delegateCalls).toEqual([]);
+    expect(JSON.parse(response.body)).toEqual({
+      error: {
+        code: "QUERY_LAB_SAFETY_LIMIT",
+        message:
+          "Query Lab safety limit exceeded: args nesting depth 12 exceeds the maximum of 8.",
+      },
+    });
+  });
+
+  it("fails Query Lab previews with a safety error when execution exceeds the timeout", async () => {
+    vi.useFakeTimers();
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [field({ name: "id", type: "String", isId: true })],
+            },
+          },
+        },
+        user: {
+          findMany: async () => new Promise(() => undefined),
+        },
+      },
+      disconnect: async () => undefined,
+    });
+
+    const responsePromise = runMiddlewareWithJsonBody(
+      middleware,
+      { method: "POST", url: "/api/query-lab/preview" },
+      {
+        model: "User",
+        operation: "findMany",
+        argsSource: "{}",
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    const response = await responsePromise;
+
+    expect(response.statusCode).toBe(504);
+    expect(JSON.parse(response.body)).toEqual({
+      error: {
+        code: "QUERY_LAB_SAFETY_LIMIT",
+        message: "Query Lab safety limit exceeded: query did not finish within 5000 ms.",
+      },
+    });
+  });
+
+  it("fails Query Lab previews with a safety error when the serialized result is too large", async () => {
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [field({ name: "id", type: "String", isId: true })],
+            },
+          },
+        },
+        user: {
+          findMany: async () => [{ id: "user_1", payload: "x".repeat(262_144) }],
+        },
+      },
+      disconnect: async () => undefined,
+    });
+
+    const response = await runMiddlewareWithJsonBody(
+      middleware,
+      { method: "POST", url: "/api/query-lab/preview" },
+      {
+        model: "User",
+        operation: "findMany",
+        argsSource: "{}",
+      },
+    );
+
+    expect(response.statusCode).toBe(413);
+    expect(JSON.parse(response.body)).toEqual({
+      error: {
+        code: "QUERY_LAB_SAFETY_LIMIT",
+        message: expect.stringContaining(
+          "Query Lab safety limit exceeded: serialized response size",
+        ),
+      },
+    });
+    expect(JSON.parse(response.body).error.message).toContain(
+      "exceeds the maximum of 262144 bytes",
+    );
   });
 
   it("rejects unknown Query Lab top-level findMany args before reaching delegates", async () => {
