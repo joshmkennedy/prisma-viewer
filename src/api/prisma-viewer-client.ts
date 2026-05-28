@@ -2,7 +2,7 @@ import type { Model } from "../domain/prisma-metadata";
 import {
   createModelRowsRequestUrl,
   type ModelRowsRequest,
-} from "../model-table-browser";
+} from "../features/model-browser/model-table-controller";
 
 type MetadataResponse = {
   models: Model[];

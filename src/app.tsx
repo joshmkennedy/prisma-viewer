@@ -71,7 +71,7 @@ import {
   type TableFilter,
   type TableRefinements,
   type TableRow,
-} from "./model-table-browser";
+} from "./features/model-browser/model-table-controller";
 import {
   filterOperators,
   normalizeModelRouteSearch,

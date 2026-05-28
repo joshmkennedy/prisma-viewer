@@ -6,10 +6,41 @@ import {
   operatorsForField,
   validateModelRouteSearch,
   type TableFilter,
-} from "../src/model-table-browser";
+} from "../src/features/model-browser/model-table-controller";
 import type { Field, Model } from "../src/domain/prisma-metadata";
 
 describe("model table browser route state", () => {
+  it("resolves selected model state and excludes relations from table fields", () => {
+    const browser = createModelTableBrowser({
+      modelName: "User",
+      rawSearch: {},
+      models: [
+        model("User", [
+          field("id"),
+          field("posts", "Post", "object"),
+          enumField("role", ["ADMIN", "MEMBER"]),
+        ]),
+      ],
+      rows: [],
+      rowStatus: "success",
+    });
+
+    expect(browser.selectedModel?.name).toBe("User");
+    expect(browser.tableFields.map((item) => item.name)).toEqual(["id", "role"]);
+    expect(browser.filterableFields.map((item) => item.name)).toEqual(["id", "role"]);
+
+    const missing = createModelTableBrowser({
+      modelName: "Post",
+      rawSearch: {},
+      models: [model("User", [field("id")])],
+      rows: [],
+      rowStatus: "idle",
+    });
+
+    expect(missing.selectedModel).toBeNull();
+    expect(missing.request).toBeNull();
+  });
+
   it("degrades invalid route search values to safe canonical state", () => {
     const filters = JSON.stringify([
       { field: "email", operator: "contains", value: "ada" },
@@ -142,6 +173,49 @@ describe("model table browser filter policy", () => {
       filters: [{ field: "role", operator: "equals", value: "ADMIN" }],
     });
   });
+
+  it("uses enum values for enum-list defaults and ignores value-less active filters", () => {
+    const emptyStringFilter: TableFilter = {
+      id: "filter-1",
+      field: "email",
+      operator: "contains",
+      value: "",
+    };
+    const emptyOperatorFilter: TableFilter = {
+      id: "filter-2",
+      field: "email",
+      operator: "empty",
+      value: "",
+    };
+    const browser = createModelTableBrowser({
+      modelName: "User",
+      rawSearch: { filters: [emptyStringFilter, emptyOperatorFilter] },
+      models: [model("User", [field("email"), enumField("roles", ["ADMIN"], true)])],
+      rows: [],
+      rowStatus: "success",
+    });
+
+    expect(browser.activeFilters).toMatchObject([{ field: "email", operator: "empty" }]);
+    expect(browser.commands.addFilter()).toMatchObject({
+      filters: [
+        { field: "email", operator: "contains", value: "" },
+        { field: "email", operator: "empty", value: "" },
+        { field: "email", operator: "contains", value: "" },
+      ],
+    });
+
+    const enumListBrowser = createModelTableBrowser({
+      modelName: "User",
+      rawSearch: {},
+      models: [model("User", [enumField("roles", ["ADMIN"], true)])],
+      rows: [],
+      rowStatus: "success",
+    });
+
+    expect(enumListBrowser.commands.addFilter()).toMatchObject({
+      filters: [{ field: "roles", operator: "equals", value: "ADMIN" }],
+    });
+  });
 });
 
 describe("model table browser row requests and visibility", () => {
@@ -200,6 +274,30 @@ describe("model table browser row requests and visibility", () => {
       "grace@example.com",
     ]);
     expect(browser.summary).toBe("Loading rows, 1 column shown");
+  });
+
+  it("summarizes loaded, refined, and error row states", () => {
+    const baseInput = {
+      modelName: "User",
+      rawSearch: {},
+      models: [model("User", [field("email"), field("name")])],
+      rows: [{ email: "ada@example.com", name: "Ada" }],
+    };
+
+    expect(createModelTableBrowser({ ...baseInput, rowStatus: "success" }).summary).toBe(
+      "1 row loaded, 2 columns shown",
+    );
+    expect(
+      createModelTableBrowser({
+        ...baseInput,
+        rawSearch: { search: "ada" },
+        rowStatus: "success",
+        loadedRefinements: { search: "ada", filters: [] },
+      }).summary,
+    ).toBe("1 match loaded, 2 columns shown");
+    expect(createModelTableBrowser({ ...baseInput, rowStatus: "error" }).summary).toBe(
+      "Rows unavailable, 2 columns shown",
+    );
   });
 
   it("maps selected route rows to original row indexes and clears hidden selections", () => {

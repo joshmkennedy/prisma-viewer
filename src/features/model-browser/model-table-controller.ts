@@ -3,8 +3,8 @@ import type {
   PaginationState,
   SortingState,
 } from "@tanstack/react-table";
-import type { Field, Model } from "./domain/prisma-metadata";
-import { formatValue } from "./domain/row-formatting";
+import type { Field, Model } from "../../domain/prisma-metadata";
+import { formatValue } from "../../domain/row-formatting";
 import {
   DEFAULT_TABLE_PAGE_SIZE,
   filterOperators,
@@ -15,7 +15,7 @@ import {
   type ModelRouteSearch,
   type ModelRouteSearchInput,
   type TableFilter,
-} from "./features/model-browser/model-route-search";
+} from "./model-route-search";
 
 export {
   DEFAULT_MODEL_ROUTE_SEARCH,
@@ -30,7 +30,7 @@ export {
   type ModelRouteSearchInput,
   type TableFilter,
   type UrlTableFilter,
-} from "./features/model-browser/model-route-search";
+} from "./model-route-search";
 
 export type TableRefinements = {
   search: string;
