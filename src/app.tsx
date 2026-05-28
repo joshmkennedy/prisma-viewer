@@ -15,7 +15,8 @@ import {
   QueryClientProvider,
   useQuery,
 } from "@tanstack/react-query";
-import Editor from "@monaco-editor/react";
+import Editor, { type BeforeMount, type Monaco, type OnMount } from "@monaco-editor/react";
+import type { editor as MonacoEditor } from "monaco-editor";
 import {
   createRootRoute,
   createRoute,
@@ -48,11 +49,17 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "./components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { cn } from "./lib/utils";
+import {
+  getQueryLabCompletions,
+  getQueryLabEditorDiagnostics,
+  type QueryLabAssistContext,
+  type QueryLabCompletionKind,
+} from "./query-lab-editor-assist";
 
 type Field = {
   name: string;
@@ -217,6 +224,7 @@ const QUERY_LAB_OPERATIONS: QueryLabOperation[] = [
   "findUnique",
   "count",
 ];
+const QUERY_LAB_MARKER_OWNER = "query-lab-assist";
 
 const DEFAULT_MODEL_ROUTE_SEARCH: ModelRouteSearch = {
   page: 1,
@@ -226,6 +234,38 @@ const DEFAULT_MODEL_ROUTE_SEARCH: ModelRouteSearch = {
   sort: [],
   row: null,
 };
+
+function monacoCompletionKind(monaco: Monaco, kind: QueryLabCompletionKind) {
+  if (kind === "arg") return monaco.languages.CompletionItemKind.Property;
+  if (kind === "relation") return monaco.languages.CompletionItemKind.Reference;
+  if (kind === "enum") return monaco.languages.CompletionItemKind.EnumMember;
+  if (kind === "operator") return monaco.languages.CompletionItemKind.Operator;
+  if (kind === "literal") return monaco.languages.CompletionItemKind.Value;
+  return monaco.languages.CompletionItemKind.Field;
+}
+
+function setQueryLabEditorMarkers(
+  monaco: Monaco,
+  editor: MonacoEditor.IStandaloneCodeEditor,
+  context: QueryLabAssistContext,
+  source: string,
+) {
+  const model = editor.getModel();
+  if (!model) return;
+  const markers = getQueryLabEditorDiagnostics(source, context).map((diagnostic) => {
+    const start = model.getPositionAt(diagnostic.startOffset);
+    const end = model.getPositionAt(Math.max(diagnostic.endOffset, diagnostic.startOffset + 1));
+    return {
+      severity: monaco.MarkerSeverity.Warning,
+      message: diagnostic.message,
+      startLineNumber: start.lineNumber,
+      startColumn: start.column,
+      endLineNumber: end.lineNumber,
+      endColumn: end.column,
+    };
+  });
+  monaco.editor.setModelMarkers(model, QUERY_LAB_MARKER_OWNER, markers);
+}
 
 function createQueryClient() {
   return new QueryClient({
@@ -938,6 +978,14 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
   );
   const [savedViewName, setSavedViewName] = useState("");
   const [currentSavedViewId, setCurrentSavedViewId] = useState<string | null>(null);
+  const queryLabEditorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  const queryLabMonacoRef = useRef<Monaco | null>(null);
+  const queryLabCompletionProviderRef = useRef<{ dispose: () => void } | null>(null);
+  const queryLabAssistContextRef = useRef<QueryLabAssistContext>({
+    models: [],
+    modelName: "",
+    operation: "findMany",
+  });
 
   const modelQuery = useQuery({
     queryKey: ["models"],
@@ -947,6 +995,14 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
   const selectedModelNameOrDefault = selectedModelName || models[0]?.name || "";
   const selectedModel =
     models.find((model) => model.name === selectedModelNameOrDefault) ?? null;
+  const queryLabAssistContext = useMemo<QueryLabAssistContext>(
+    () => ({
+      models,
+      modelName: selectedModel?.name ?? selectedModelNameOrDefault,
+      operation,
+    }),
+    [models, operation, selectedModel?.name, selectedModelNameOrDefault],
+  );
   const hasStaleRouteModel =
     Boolean(initialModelName) && modelQuery.isSuccess && !selectedModel;
   const hasUnavailableSelectedModel =
@@ -955,6 +1011,26 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
   useEffect(() => {
     persistSavedQueryLabViews(savedViews);
   }, [savedViews]);
+
+  useEffect(() => {
+    queryLabAssistContextRef.current = queryLabAssistContext;
+    if (queryLabMonacoRef.current && queryLabEditorRef.current) {
+      setQueryLabEditorMarkers(
+        queryLabMonacoRef.current,
+        queryLabEditorRef.current,
+        queryLabAssistContext,
+        argsSource,
+      );
+    }
+  }, [argsSource, queryLabAssistContext]);
+
+  useEffect(
+    () => () => {
+      queryLabCompletionProviderRef.current?.dispose();
+      queryLabCompletionProviderRef.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!selectedModelName && models[0]) {
@@ -1100,6 +1176,50 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
       setRecordPreviewMode(value);
     }
   }
+
+  const handleQueryLabEditorBeforeMount = useCallback<BeforeMount>((monaco) => {
+    queryLabMonacoRef.current = monaco;
+    if (queryLabCompletionProviderRef.current) return;
+
+    queryLabCompletionProviderRef.current =
+      monaco.languages.registerCompletionItemProvider("javascript", {
+        triggerCharacters: [":", "{", ",", "\"", "'"],
+        provideCompletionItems: (
+          model: MonacoEditor.ITextModel,
+          position: { lineNumber: number; column: number },
+        ) => {
+          const word = model.getWordUntilPosition(position);
+          const range = {
+            startLineNumber: position.lineNumber,
+            endLineNumber: position.lineNumber,
+            startColumn: word.startColumn,
+            endColumn: word.endColumn,
+          };
+          const suggestions = getQueryLabCompletions(
+            model.getValue(),
+            model.getOffsetAt(position),
+            queryLabAssistContextRef.current,
+          ).map((item) => ({
+            label: item.label,
+            insertText: item.insertText,
+            kind: monacoCompletionKind(monaco, item.kind),
+            detail: item.detail,
+            range,
+          }));
+
+          return { suggestions };
+        },
+      });
+  }, []);
+
+  const handleQueryLabEditorMount = useCallback<OnMount>(
+    (editor, monaco) => {
+      queryLabEditorRef.current = editor;
+      queryLabMonacoRef.current = monaco;
+      setQueryLabEditorMarkers(monaco, editor, queryLabAssistContextRef.current, argsSource);
+    },
+    [argsSource],
+  );
 
   return (
     <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground shadow-tool">
@@ -1349,6 +1469,8 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                 theme="vs-dark"
                 value={argsSource}
                 onChange={(value) => setArgsSource(value ?? "")}
+                beforeMount={handleQueryLabEditorBeforeMount}
+                onMount={handleQueryLabEditorMount}
                 options={{
                   minimap: { enabled: false },
                   fontFamily:

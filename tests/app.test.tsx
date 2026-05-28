@@ -6,6 +6,8 @@ import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/app";
 
+const monacoSetModelMarkers = vi.hoisted(() => vi.fn());
+
 vi.mock("sonner", async (importOriginal) => {
   const actual = await importOriginal<typeof import("sonner")>();
   return {
@@ -21,20 +23,50 @@ vi.mock("@monaco-editor/react", () => ({
   default: ({
     value,
     onChange,
+    beforeMount,
+    onMount,
   }: {
     value: string;
     onChange: (value: string | undefined) => void;
-  }) => (
-    <div
-      aria-label="Args Mode editor"
-      role="textbox"
-      contentEditable
-      suppressContentEditableWarning
-      onInput={(event) => onChange(event.currentTarget.textContent ?? "")}
-    >
-      {value}
-    </div>
-  ),
+    beforeMount?: (monaco: unknown) => void;
+    onMount?: (editor: unknown, monaco: unknown) => void;
+  }) => {
+    const model = {
+      getPositionAt: (offset: number) => ({ lineNumber: 1, column: offset + 1 }),
+      getValue: () => value,
+      getOffsetAt: () => 0,
+      getWordUntilPosition: () => ({ startColumn: 1, endColumn: 1 }),
+    };
+    const monaco = {
+      MarkerSeverity: { Warning: 4 },
+      editor: { setModelMarkers: monacoSetModelMarkers },
+      languages: {
+        CompletionItemKind: {
+          Property: 9,
+          Reference: 18,
+          EnumMember: 20,
+          Operator: 11,
+          Value: 12,
+          Field: 5,
+        },
+        registerCompletionItemProvider: vi.fn(() => ({ dispose: vi.fn() })),
+      },
+    };
+    beforeMount?.(monaco);
+    onMount?.({ getModel: () => model }, monaco);
+
+    return (
+      <div
+        aria-label="Args Mode editor"
+        role="textbox"
+        contentEditable
+        suppressContentEditableWarning
+        onInput={(event) => onChange(event.currentTarget.textContent ?? "")}
+      >
+        {value}
+      </div>
+    );
+  },
 }));
 
 type QueryLabSqlEvent = {
@@ -572,6 +604,33 @@ describe("App Query Lab", () => {
 
     expect(await screen.findByText("Could not run preview.")).toBeTruthy();
     expect(screen.getByText("invalid args")).toBeTruthy();
+  });
+
+  it("wires Query Lab editor diagnostics into Monaco markers", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+    });
+
+    renderApp("/query-lab");
+
+    const editor = await screen.findByLabelText("Args Mode editor");
+    fireEvent.input(editor, {
+      currentTarget: { textContent: "{ cursor: { id: \"user_1\" } }" },
+      target: { textContent: "{ cursor: { id: \"user_1\" } }" },
+    });
+
+    await waitFor(() => {
+      expect(monacoSetModelMarkers).toHaveBeenLastCalledWith(
+        expect.anything(),
+        "query-lab-assist",
+        expect.arrayContaining([
+          expect.objectContaining({
+            message: "Unsupported Query Lab findMany arg: cursor.",
+          }),
+        ]),
+      );
+    });
   });
 
   it("opens a model-specific Query Lab route with the model preselected", async () => {
