@@ -10,10 +10,12 @@ import {
 } from "@tanstack/react-table";
 import {
   keepPreviousData,
+  useMutation,
   QueryClient,
   QueryClientProvider,
   useQuery,
 } from "@tanstack/react-query";
+import Editor from "@monaco-editor/react";
 import {
   createRootRoute,
   createRoute,
@@ -30,9 +32,11 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Code2,
   Database,
   FileJson,
   Filter,
+  Play,
   Plus,
   RefreshCcw,
   Search,
@@ -72,6 +76,14 @@ type RowsResponse = {
   };
 };
 
+type QueryLabPreviewResponse = {
+  model: string;
+  operation: QueryLabOperation;
+  args: Record<string, unknown>;
+  result?: unknown;
+  rows?: unknown[];
+};
+
 type ApiErrorResponse = {
   error?: {
     message?: string;
@@ -91,6 +103,7 @@ type RowLoadState =
 
 type PreviewMode = "fields" | "json";
 type FilterOperator = "contains" | "equals" | "startsWith" | "endsWith" | "empty" | "notEmpty";
+type QueryLabOperation = "findMany" | "findFirst" | "findUnique" | "count";
 
 type TableFilter = {
   id: string;
@@ -133,6 +146,13 @@ const ROW_REFINEMENT_DEBOUNCE_MS = 300;
 const DEFAULT_TABLE_PAGE_SIZE = 100;
 const TABLE_PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
 const ROWS_QUERY_KEY = "modelRows";
+const QUERY_LAB_DEFAULT_ARGS = "{\n  take: 25\n}";
+const QUERY_LAB_OPERATIONS: QueryLabOperation[] = [
+  "findMany",
+  "findFirst",
+  "findUnique",
+  "count",
+];
 
 const DEFAULT_MODEL_ROUTE_SEARCH: ModelRouteSearch = {
   page: 1,
@@ -382,6 +402,34 @@ function formatJsonPreview(row: Record<string, unknown>) {
   return JSON.stringify(toStableJsonValue(row), null, 2);
 }
 
+function columnsForRows(rows: unknown[]) {
+  const columns = new Set<string>();
+  for (const row of rows) {
+    if (!isRowObject(row)) return [];
+    Object.keys(row).forEach((key) => columns.add(key));
+  }
+  return Array.from(columns);
+}
+
+function rowsForQueryLabResult(operation: QueryLabOperation, result: unknown) {
+  if (operation === "findMany") return Array.isArray(result) ? result : [];
+  if (operation === "findFirst" || operation === "findUnique") {
+    return isRowObject(result) ? [result] : [];
+  }
+  return [];
+}
+
+function isQueryLabOperation(value: unknown): value is QueryLabOperation {
+  return (
+    typeof value === "string" &&
+    QUERY_LAB_OPERATIONS.includes(value as QueryLabOperation)
+  );
+}
+
+function isRowObject(row: unknown): row is Record<string, unknown> {
+  return typeof row === "object" && row !== null && !Array.isArray(row);
+}
+
 function formatRowSummary(
   rowState: RowLoadState,
   columnCount: number,
@@ -506,6 +554,30 @@ async function fetchModelRows(
   return body;
 }
 
+async function previewQueryLab(
+  payload: {
+    model: string;
+    operation: QueryLabOperation;
+    argsSource: string;
+  },
+  signal?: AbortSignal,
+): Promise<QueryLabPreviewResponse> {
+  const response = await fetch("/api/query-lab/preview", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+    signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(await formatApiError(response, "Query Lab preview API"));
+  }
+
+  return (await response.json()) as QueryLabPreviewResponse;
+}
+
 async function formatApiError(response: Response, label: string) {
   try {
     const body = (await response.json()) as ApiErrorResponse;
@@ -534,7 +606,24 @@ const modelRoute = createRoute({
   component: ModelRoute,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, modelRoute]);
+const queryLabRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/query-lab",
+  component: () => <QueryLabRoute initialModelName={null} />,
+});
+
+const queryLabModelRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/query-lab/$modelName",
+  component: QueryLabModelRoute,
+});
+
+const routeTree = rootRoute.addChildren([
+  indexRoute,
+  modelRoute,
+  queryLabRoute,
+  queryLabModelRoute,
+]);
 const typedRouter = createRouter({ routeTree });
 
 declare module "@tanstack/react-router" {
@@ -558,6 +647,326 @@ function ModelRoute() {
   const { modelName } = modelRoute.useParams();
   const routeSearch = modelRoute.useSearch();
   return <AppContent routedModelName={modelName} rawRouteSearch={routeSearch} />;
+}
+
+function QueryLabModelRoute() {
+  const { modelName } = queryLabModelRoute.useParams();
+  return <QueryLabRoute initialModelName={modelName} />;
+}
+
+function QueryLabRoute({ initialModelName }: { initialModelName: string | null }) {
+  const navigate = useNavigate();
+  const [selectedModelName, setSelectedModelName] = useState(initialModelName ?? "");
+  const [operation, setOperation] = useState<QueryLabOperation>("findMany");
+  const [argsSource, setArgsSource] = useState(QUERY_LAB_DEFAULT_ARGS);
+
+  const modelQuery = useQuery({
+    queryKey: ["models"],
+    queryFn: ({ signal }) => fetchModelMetadata(signal),
+  });
+  const models = modelQuery.data ?? [];
+  const selectedModelNameOrDefault = selectedModelName || models[0]?.name || "";
+  const selectedModel =
+    models.find((model) => model.name === selectedModelNameOrDefault) ?? null;
+  const hasStaleRouteModel =
+    Boolean(initialModelName) && modelQuery.isSuccess && !selectedModel;
+
+  useEffect(() => {
+    if (!selectedModelName && models[0]) {
+      setSelectedModelName(models[0].name);
+    }
+  }, [models, selectedModelName]);
+
+  useEffect(() => {
+    setSelectedModelName(initialModelName ?? "");
+  }, [initialModelName]);
+
+  function selectQueryLabModel(modelName: string) {
+    setSelectedModelName(modelName);
+    void navigate({
+      to: "/query-lab/$modelName",
+      params: { modelName },
+      replace: initialModelName !== null,
+    });
+  }
+
+  const previewMutation = useMutation({
+    mutationFn: () =>
+      previewQueryLab({
+        model: selectedModelNameOrDefault,
+        operation,
+        argsSource,
+      }),
+  });
+
+  const previewResult = previewMutation.data
+    ? previewMutation.data.result !== undefined
+      ? previewMutation.data.result
+      : (previewMutation.data.rows ?? [])
+    : undefined;
+  const resultRows = rowsForQueryLabResult(
+    previewMutation.data?.operation ?? operation,
+    previewResult,
+  );
+  const rowColumns = useMemo(() => columnsForRows(resultRows), [resultRows]);
+  const scalarCount =
+    previewMutation.data?.operation === "count" && typeof previewResult === "number"
+      ? previewResult
+      : null;
+  const emptySingleRecordResult =
+    previewMutation.data &&
+    (previewMutation.data.operation === "findFirst" ||
+      previewMutation.data.operation === "findUnique") &&
+    previewResult === null;
+  const canRun =
+    Boolean(selectedModel) &&
+    modelQuery.isSuccess &&
+    !previewMutation.isPending;
+
+  return (
+    <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground shadow-tool">
+      <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-surface/95 px-3 backdrop-blur">
+        <Link to="/" className="flex min-w-0 items-center gap-2">
+          <div className="flex h-7 w-7 items-center justify-center rounded-md border border-border bg-elevated shadow-sm">
+            <Database className="h-4 w-4 text-primary" aria-hidden="true" />
+          </div>
+          <div className="min-w-0">
+            <h1 className="truncate text-sm font-semibold">Prisma Viewer</h1>
+            <p className="truncate font-mono text-[10px] uppercase text-muted-foreground">
+              query lab
+            </p>
+          </div>
+        </Link>
+        <nav className="flex items-center gap-2">
+          <Link
+            to="/"
+            className="rounded-md border border-border bg-elevated px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+          >
+            Models
+          </Link>
+          <Link
+            to="/query-lab"
+            className="rounded-md border border-primary/60 bg-primary px-2 py-1 text-xs font-medium text-primary-foreground"
+          >
+            Query Lab
+          </Link>
+        </nav>
+      </header>
+
+      <section className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[340px_minmax(0,1fr)]">
+        <aside className="flex min-h-0 flex-col border-b border-border bg-panel lg:border-b-0 lg:border-r">
+          <div className="border-b border-border p-3">
+            <div className="mb-3 flex items-center gap-2">
+              <Code2 className="h-4 w-4 text-primary" aria-hidden="true" />
+              <h2 className="text-sm font-semibold">Query Lab</h2>
+            </div>
+
+            <label className="mb-2 block text-xs font-medium text-muted-foreground">
+              Model
+              <select
+                value={selectedModel?.name ?? ""}
+                onChange={(event) => selectQueryLabModel(event.target.value)}
+                disabled={modelQuery.isLoading || models.length === 0}
+                aria-label="Query Lab model"
+                className="mt-1 h-9 w-full rounded-md border border-input bg-elevated px-2 text-xs text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring disabled:opacity-50"
+              >
+                {!selectedModel ? (
+                  <option value="">
+                    {hasStaleRouteModel ? "Select a valid model" : "Select model"}
+                  </option>
+                ) : null}
+                {models.map((model) => (
+                  <option key={model.name} value={model.name}>
+                    {model.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block text-xs font-medium text-muted-foreground">
+              Operation
+              <select
+                value={operation}
+                onChange={(event) => {
+                  if (isQueryLabOperation(event.target.value)) {
+                    const nextOperation = event.target.value;
+                    setOperation(nextOperation);
+                    if (nextOperation === "findMany" && argsSource.trim() === "{}") {
+                      setArgsSource(QUERY_LAB_DEFAULT_ARGS);
+                    }
+                    if (nextOperation !== "findMany" && argsSource === QUERY_LAB_DEFAULT_ARGS) {
+                      setArgsSource("{}");
+                    }
+                  }
+                }}
+                aria-label="Query Lab operation"
+                className="mt-1 h-9 w-full rounded-md border border-input bg-elevated px-2 text-xs text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring"
+              >
+                {QUERY_LAB_OPERATIONS.map((queryLabOperation) => (
+                  <option key={queryLabOperation} value={queryLabOperation}>
+                    {queryLabOperation}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-auto p-3 text-xs text-muted-foreground">
+            {modelQuery.isLoading ? (
+              <div className="rounded-md border border-dashed border-border bg-surface p-3">
+                Loading models...
+              </div>
+            ) : modelQuery.isError ? (
+              <div className="rounded-md border border-dashed border-danger/70 bg-surface p-3">
+                <p className="font-medium text-danger">Could not load models.</p>
+                <p className="mt-1">
+                  {modelQuery.error instanceof Error
+                    ? modelQuery.error.message
+                    : "Could not load Prisma model metadata."}
+                </p>
+              </div>
+            ) : hasStaleRouteModel ? (
+              <div className="rounded-md border border-dashed border-border bg-surface p-3">
+                <p className="font-medium text-foreground">Model not found.</p>
+                <p className="mt-1">
+                  Model "{initialModelName}" is no longer available. Select a valid model to
+                  continue.
+                </p>
+              </div>
+            ) : selectedModel ? (
+              <div className="rounded-md border border-border bg-surface">
+                <div className="border-b border-border px-2 py-2 font-medium text-foreground">
+                  {selectedModel.name}
+                </div>
+                <dl>
+                  {selectedModel.fields.slice(0, 10).map((field) => (
+                    <div
+                      key={field.name}
+                      className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 border-b border-border px-2 py-1.5 last:border-b-0"
+                    >
+                      <dt className="truncate text-foreground">{field.name}</dt>
+                      <dd className="font-mono text-[11px]">{formatFieldType(field)}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </div>
+            ) : (
+              <div className="rounded-md border border-dashed border-border bg-surface p-3">
+                No Prisma models found.
+              </div>
+            )}
+          </div>
+        </aside>
+
+        <section className="flex min-h-0 min-w-0 flex-col bg-surface">
+          <div className="flex min-h-0 flex-1 flex-col border-b border-border">
+            <div className="flex h-10 shrink-0 items-center justify-between border-b border-border bg-panel/80 px-3">
+              <span className="font-mono text-[11px] uppercase text-muted-foreground">
+                Args Mode
+              </span>
+              <Button
+                type="button"
+                onClick={() => previewMutation.mutate()}
+                disabled={!canRun}
+                aria-label="Run Query Lab preview"
+              >
+                <Play className="h-3.5 w-3.5" aria-hidden="true" />
+                Run
+              </Button>
+            </div>
+            <div className="min-h-[220px] flex-1">
+              <Editor
+                height="100%"
+                defaultLanguage="javascript"
+                theme="vs-dark"
+                value={argsSource}
+                onChange={(value) => setArgsSource(value ?? "")}
+                options={{
+                  minimap: { enabled: false },
+                  fontFamily:
+                    '"Berkeley Mono", "JetBrains Mono", "SFMono-Regular", Consolas, monospace',
+                  fontSize: 12,
+                  lineNumbers: "on",
+                  scrollBeyondLastLine: false,
+                  tabSize: 2,
+                  wordWrap: "on",
+                }}
+              />
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-auto">
+            {previewMutation.isPending ? (
+              <div className="p-6 text-center text-xs text-muted-foreground">
+                Running preview...
+              </div>
+            ) : previewMutation.isError ? (
+              <div className="p-6 text-center text-xs text-muted-foreground">
+                <p className="font-medium text-danger">Could not run preview.</p>
+                <p className="mt-1">
+                  {previewMutation.error instanceof Error
+                    ? previewMutation.error.message
+                    : "Query Lab preview failed."}
+                </p>
+              </div>
+            ) : !previewMutation.data ? (
+              <div className="p-6 text-center text-xs text-muted-foreground">
+                Preview results will appear here.
+              </div>
+            ) : scalarCount !== null ? (
+              <div className="p-6">
+                <div className="inline-flex min-w-36 flex-col rounded-md border border-border bg-panel px-4 py-3">
+                  <span className="text-xs font-medium text-muted-foreground">Count</span>
+                  <span className="mt-1 font-mono text-3xl font-semibold text-foreground">
+                    {scalarCount}
+                  </span>
+                </div>
+              </div>
+            ) : emptySingleRecordResult ? (
+              <div className="p-6 text-center text-xs text-muted-foreground">
+                No record matched this {previewMutation.data.operation} query.
+              </div>
+            ) : rowColumns.length > 0 ? (
+              <table className="w-max min-w-full border-collapse text-left text-xs">
+                <thead className="sticky top-0 bg-panel">
+                  <tr>
+                    {rowColumns.map((column) => (
+                      <th
+                        key={column}
+                        className="min-w-[150px] border-b border-r border-border px-3 py-2 font-medium text-muted-foreground last:border-r-0"
+                      >
+                        {column}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(resultRows as Record<string, unknown>[]).map((row, index) => (
+                    <tr key={index} className="h-10 border-b border-border">
+                      {rowColumns.map((column) => (
+                        <td
+                          key={column}
+                          className="min-w-[150px] border-r border-border px-3 py-1.5 last:border-r-0"
+                        >
+                          <span className="block max-h-5 truncate font-mono text-[11px] leading-5">
+                            {formatValue(row[column])}
+                          </span>
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <pre className="m-3 overflow-auto rounded-md border border-border bg-panel p-3 font-mono text-[11px] text-code">
+                {JSON.stringify(toStableJsonValue(previewResult), null, 2)}
+              </pre>
+            )}
+          </div>
+        </section>
+      </section>
+    </main>
+  );
 }
 
 function AppContent({
@@ -1029,6 +1438,12 @@ function AppContent({
           </div>
         </Link>
         <div className="flex items-center gap-2">
+          <Link
+            to="/query-lab"
+            className="rounded-md border border-border bg-elevated px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+          >
+            Query Lab
+          </Link>
           <span className="hidden items-center gap-1.5 rounded border border-border bg-elevated px-2 py-1 font-mono text-[11px] font-medium text-muted-foreground sm:inline-flex">
             <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden="true" />
             Read-only
@@ -1122,17 +1537,30 @@ function AppContent({
                     : "Load metadata to inspect model fields"}
                 </p>
               </div>
-              {hasPendingTableRefinements ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={clearTableRefinements}
-                  aria-label="Clear table search and filters"
-                >
-                  <X className="h-3.5 w-3.5" aria-hidden="true" />
-                  Clear
-                </Button>
-              ) : null}
+              <div className="flex shrink-0 items-center gap-2">
+                {selectedModel ? (
+                  <Link
+                    to="/query-lab/$modelName"
+                    params={{ modelName: selectedModel.name }}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-elevated px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
+                    aria-label={`Open Query Lab for ${selectedModel.name}`}
+                  >
+                    <Code2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    Query Lab
+                  </Link>
+                ) : null}
+                {hasPendingTableRefinements ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={clearTableRefinements}
+                    aria-label="Clear table search and filters"
+                  >
+                    <X className="h-3.5 w-3.5" aria-hidden="true" />
+                    Clear
+                  </Button>
+                ) : null}
+              </div>
             </div>
 
             {isModelRoute ? (

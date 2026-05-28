@@ -17,6 +17,26 @@ vi.mock("sonner", async (importOriginal) => {
   };
 });
 
+vi.mock("@monaco-editor/react", () => ({
+  default: ({
+    value,
+    onChange,
+  }: {
+    value: string;
+    onChange: (value: string | undefined) => void;
+  }) => (
+    <div
+      aria-label="Args Mode editor"
+      role="textbox"
+      contentEditable
+      suppressContentEditableWarning
+      onInput={(event) => onChange(event.currentTarget.textContent ?? "")}
+    >
+      {value}
+    </div>
+  ),
+}));
+
 describe("App model sidebar", () => {
   afterEach(() => {
     cleanup();
@@ -107,6 +127,254 @@ describe("App model sidebar", () => {
     renderApp();
     expect((await screen.findAllByText("Could not load models.")).length).toBeGreaterThan(0);
     expect(screen.getByText("metadata unavailable")).toBeTruthy();
+  });
+});
+
+describe("App Query Lab", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("renders Query Lab as a first-class route and previews row-shaped findMany results", async () => {
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email"]), model("Post", ["id", "title"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: [
+          {
+            id: "user_1",
+            email: "ada@example.com",
+          },
+        ],
+      },
+    });
+
+    renderApp("/query-lab");
+
+    expect(await screen.findByRole("heading", { name: "Query Lab" })).toBeTruthy();
+    expect(screen.getByLabelText("Query Lab model")).toBeTruthy();
+    expect(screen.getByLabelText("Query Lab operation")).toHaveProperty("value", "findMany");
+    expect(within(screen.getByLabelText("Query Lab operation")).getByText("findFirst")).toBeTruthy();
+    expect(within(screen.getByLabelText("Query Lab operation")).getByText("findUnique")).toBeTruthy();
+    expect(within(screen.getByLabelText("Query Lab operation")).getByText("count")).toBeTruthy();
+    expect(screen.getByLabelText("Args Mode editor")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/query-lab/preview",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "User",
+            operation: "findMany",
+            argsSource: "{\n  take: 25\n}",
+          }),
+        }),
+      );
+    });
+    expect(await screen.findByText("ada@example.com")).toBeTruthy();
+    expect(screen.getAllByText("id").length).toBeGreaterThan(1);
+    expect(screen.getAllByText("email").length).toBeGreaterThan(1);
+  });
+
+  it.each([
+    ["findFirst", { id: "user_1", email: "first@example.com" }, "first@example.com"],
+    ["findUnique", { id: "user_2", email: "unique@example.com" }, "unique@example.com"],
+  ] as const)("previews single-record %s results", async (operation, result, expectedText) => {
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+      previewResultsByOperation: {
+        [operation]: result,
+      },
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await userEvent.selectOptions(screen.getByLabelText("Query Lab operation"), operation);
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/query-lab/preview",
+        expect.objectContaining({
+          body: JSON.stringify({
+            model: "User",
+            operation,
+            argsSource: "{}",
+          }),
+        }),
+      );
+    });
+    expect(await screen.findByText(expectedText)).toBeTruthy();
+  });
+
+  it.each(["findFirst", "findUnique"] as const)(
+    "shows an empty result state for %s misses",
+    async (operation) => {
+      mockApiResponses({
+        models: [model("User", ["id", "email"])],
+        rowsByModel: {},
+        previewResultsByOperation: {
+          [operation]: null,
+        },
+      });
+
+      renderApp("/query-lab");
+
+      await screen.findByLabelText("Args Mode editor");
+      await userEvent.selectOptions(screen.getByLabelText("Query Lab operation"), operation);
+      await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+      expect(
+        await screen.findByText(`No record matched this ${operation} query.`),
+      ).toBeTruthy();
+    },
+  );
+
+  it("renders Query Lab count as a scalar result", async () => {
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+      previewResultsByOperation: {
+        count: 42,
+      },
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await userEvent.selectOptions(screen.getByLabelText("Query Lab operation"), "count");
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/query-lab/preview",
+        expect.objectContaining({
+          body: JSON.stringify({
+            model: "User",
+            operation: "count",
+            argsSource: "{}",
+          }),
+        }),
+      );
+    });
+    expect(await screen.findByText("Count")).toBeTruthy();
+    expect(screen.getByText("42")).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
+  });
+
+  it("shows Query Lab loading and error states", async () => {
+    mockApiResponses({
+      models: [model("User", ["id"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: new Error("invalid args"),
+      },
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    expect(await screen.findByText("Could not run preview.")).toBeTruthy();
+    expect(screen.getByText("invalid args")).toBeTruthy();
+  });
+
+  it("opens a model-specific Query Lab route with the model preselected", async () => {
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email"]), model("Post", ["id", "title"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        Post: [{ id: "post_1", title: "Query Lab notes" }],
+      },
+    });
+
+    renderApp("/query-lab/Post");
+
+    expect(await screen.findByRole("heading", { name: "Query Lab" })).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByLabelText("Query Lab model")).toHaveProperty("value", "Post"),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/query-lab/preview",
+        expect.objectContaining({
+          body: JSON.stringify({
+            model: "Post",
+            operation: "findMany",
+            argsSource: "{\n  take: 25\n}",
+          }),
+        }),
+      );
+    });
+    expect(await screen.findByText("Query Lab notes")).toBeTruthy();
+  });
+
+  it("shows a stale model state for invalid Query Lab model routes", async () => {
+    const fetchMock = mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: [{ id: "user_1", email: "ada@example.com" }],
+      },
+    });
+
+    renderApp("/query-lab/Missing");
+
+    expect(await screen.findByText("Model not found.")).toBeTruthy();
+    expect(screen.getByText(/Model "Missing" is no longer available/)).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: "Run Query Lab preview" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+
+    await userEvent.selectOptions(screen.getByLabelText("Query Lab model"), "User");
+    await waitFor(() => expect(window.location.pathname).toBe("/query-lab/User"));
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/query-lab/preview",
+        expect.objectContaining({
+          body: JSON.stringify({
+            model: "User",
+            operation: "findMany",
+            argsSource: "{\n  take: 25\n}",
+          }),
+        }),
+      );
+    });
+    expect(await screen.findByText("ada@example.com")).toBeTruthy();
+  });
+
+  it("navigates from a model page into Query Lab for the current model", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"]), model("Post", ["id", "title"])],
+      rowsByModel: {
+        User: [],
+        Post: [{ id: "post_1", title: "Routing test" }],
+      },
+    });
+
+    renderApp("/model/Post");
+
+    expect(await screen.findByText("Routing test")).toBeTruthy();
+    await userEvent.click(screen.getByRole("link", { name: "Open Query Lab for Post" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/query-lab/Post"));
+    expect(await screen.findByRole("heading", { name: "Query Lab" })).toBeTruthy();
+    expect(screen.getByLabelText("Query Lab model")).toHaveProperty("value", "Post");
   });
 });
 
@@ -996,11 +1264,15 @@ function field(
 function mockApiResponses({
   models,
   rowsByModel,
+  previewRowsByModel = {},
+  previewResultsByOperation = {},
 }: {
   models: ReturnType<typeof model>[];
   rowsByModel: Record<string, Record<string, unknown>[] | Error | "pending">;
+  previewRowsByModel?: Record<string, Record<string, unknown>[] | Error>;
+  previewResultsByOperation?: Record<string, unknown>;
 }) {
-  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url === "/api/models") {
       return {
@@ -1022,10 +1294,53 @@ function mockApiResponses({
       };
     }
 
+    if (url === "/api/query-lab/preview") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        model?: string;
+        operation?: string;
+        argsSource?: string;
+      };
+      const operation = body.operation ?? "findMany";
+      const resultForOperation = previewResultsByOperation[operation];
+      const rows = previewRowsByModel[body.model ?? ""] ?? [];
+      if (rows instanceof Error) {
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({ error: { message: rows.message } }),
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () => {
+          const result =
+            resultForOperation !== undefined
+              ? resultForOperation
+              : operation === "findMany"
+                ? rows
+                : null;
+          return {
+            model: body.model,
+            operation,
+            args: parseMockQueryLabArgs(body.argsSource),
+            result,
+            rows: operation === "findMany" ? result : undefined,
+          };
+        },
+      };
+    }
+
     throw new Error(`Unexpected fetch URL: ${url}`);
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
+}
+
+function parseMockQueryLabArgs(argsSource: string | undefined) {
+  if (!argsSource) return {};
+  const takeMatch = /\btake\s*:\s*(\d+)/.exec(argsSource);
+  return takeMatch ? { take: Number(takeMatch[1]) } : {};
 }
 
 function mockPendingModelsResponse() {

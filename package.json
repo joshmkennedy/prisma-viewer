@@ -22,6 +22,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
     "@tailwindcss/vite": "^4.3.0",
     "@tanstack/react-query": "^5.100.14",
     "@tanstack/react-router": "^1.170.8",
@@ -30,6 +31,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.468.0",
+    "monaco-editor": "^0.55.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "sonner": "^2.0.7",

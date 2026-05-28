@@ -2,17 +2,25 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { PrismaFieldMetadata, PrismaModelMetadata } from "./metadata.js";
 import { MetadataError, discoverPrismaMetadata } from "./metadata.js";
 import type { PrismaRuntime } from "./prisma.js";
+import { parseQueryLabArgsSource } from "./query-lab-args.js";
+import { validateQueryLabArgs, type QueryLabOperation } from "./query-lab-validation.js";
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
+const DEFAULT_QUERY_LAB_TAKE = 50;
+const MAX_QUERY_LAB_TAKE = 100;
+const MAX_REQUEST_BODY_BYTES = 256 * 1024;
+const QUERY_LAB_OPERATIONS = ["findMany", "findFirst", "findUnique", "count"] as const;
 
 type ApiErrorCode =
   | "DELEGATE_UNAVAILABLE"
   | "INVALID_FILTER"
   | "INVALID_PAGINATION"
+  | "INVALID_QUERY"
   | "METHOD_NOT_ALLOWED"
   | "METADATA_UNAVAILABLE"
   | "MODEL_NOT_FOUND"
+  | "OPERATION_NOT_SUPPORTED"
   | "ROWS_UNAVAILABLE";
 
 type MiddlewareNext = (error?: unknown) => void;
@@ -43,6 +51,11 @@ export function createPrismaApiMiddleware(prismaRuntime: PrismaRuntime) {
       return;
     }
 
+    if (url.pathname === "/api/query-lab/preview") {
+      await handleQueryLabPreviewRequest(request, response, prismaRuntime);
+      return;
+    }
+
     const rowRoute = parseRowsRoute(url.pathname);
     if (!rowRoute) {
       next();
@@ -51,6 +64,159 @@ export function createPrismaApiMiddleware(prismaRuntime: PrismaRuntime) {
 
     await handleRowsRequest(request, response, prismaRuntime, rowRoute.modelName, url);
   };
+}
+
+async function handleQueryLabPreviewRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  prismaRuntime: PrismaRuntime,
+) {
+  if (request.method !== "POST") {
+    response.setHeader("Allow", "POST");
+    sendJson(response, 405, {
+      error: {
+        code: "METHOD_NOT_ALLOWED",
+        message: "Prisma Viewer exposes only read-only API endpoints.",
+      },
+    });
+    return;
+  }
+
+  const body = await readJsonBody(request);
+  if ("error" in body) {
+    sendJson(response, 400, {
+      error: {
+        code: "INVALID_QUERY",
+        message: body.error,
+      },
+    });
+    return;
+  }
+
+  const payload = body.value;
+  if (!isRecord(payload)) {
+    sendJson(response, 400, {
+      error: {
+        code: "INVALID_QUERY",
+        message: "Query Lab preview requests must include a JSON object body.",
+      },
+    });
+    return;
+  }
+
+  const modelName = payload.model;
+  const operation = payload.operation;
+  const argsSource = payload.argsSource;
+  if (typeof modelName !== "string" || modelName.trim() === "") {
+    sendJson(response, 400, {
+      error: {
+        code: "INVALID_QUERY",
+        message: "Query Lab preview requests must include a model name.",
+      },
+    });
+    return;
+  }
+  if (!isQueryLabOperation(operation)) {
+    sendJson(response, 400, {
+      error: {
+        code: "OPERATION_NOT_SUPPORTED",
+        message: "Query Lab supports only findMany, findFirst, findUnique, and count.",
+      },
+    });
+    return;
+  }
+  if (typeof argsSource !== "string") {
+    sendJson(response, 400, {
+      error: {
+        code: "INVALID_QUERY",
+        message: "Query Lab preview requests must include an args source string.",
+      },
+    });
+    return;
+  }
+
+  let metadata;
+  try {
+    metadata = discoverPrismaMetadata(prismaRuntime.client);
+  } catch (error) {
+    sendJson(response, 500, {
+      error: {
+        code: "METADATA_UNAVAILABLE",
+        message:
+          error instanceof MetadataError
+            ? error.message
+            : "Could not discover Prisma model metadata.",
+      },
+    });
+    return;
+  }
+
+  const model = metadata.models.find((candidate) => candidate.name === modelName);
+  if (!model) {
+    sendJson(response, 404, {
+      error: {
+        code: "MODEL_NOT_FOUND",
+        message: `Unknown Prisma model: ${modelName}.`,
+      },
+    });
+    return;
+  }
+
+  const parsedArgs = parseQueryLabArgsSource(argsSource);
+  if ("error" in parsedArgs) {
+    sendJson(response, 400, {
+      error: {
+        code: "INVALID_QUERY",
+        message: parsedArgs.error,
+      },
+    });
+    return;
+  }
+
+  const validatedArgs = validateQueryLabArgs(metadata, model, operation, parsedArgs.args);
+  if ("error" in validatedArgs) {
+    sendJson(response, 400, {
+      error: {
+        code: "INVALID_QUERY",
+        message: validatedArgs.error,
+      },
+    });
+    return;
+  }
+
+  const delegate = prismaRuntime.client[delegateNameForModel(model.name)];
+  if (!isQueryLabDelegate(delegate, operation)) {
+    sendJson(response, 500, {
+      error: {
+        code: "DELEGATE_UNAVAILABLE",
+        message: `Could not find a read-only Prisma delegate for model ${model.name}.`,
+      },
+    });
+    return;
+  }
+
+  const args =
+    operation === "findMany" ? capFindManyArgs(validatedArgs.args) : validatedArgs.args;
+  try {
+    const result = await delegate[operation](args);
+    sendJson(response, 200, {
+      model: model.name,
+      operation,
+      args,
+      result,
+      rows: operation === "findMany" && Array.isArray(result) ? result : undefined,
+    });
+  } catch (error) {
+    sendJson(response, 500, {
+      error: {
+        code: "ROWS_UNAVAILABLE",
+        message:
+          error instanceof Error && error.message
+            ? `Could not preview ${operation} for model ${model.name}: ${error.message}`
+            : `Could not preview ${operation} for model ${model.name}.`,
+      },
+    });
+  }
 }
 
 function handleModelsRequest(
@@ -474,6 +640,51 @@ function parsePositiveInteger(value: string) {
   return parsed;
 }
 
+async function readJsonBody(
+  request: IncomingMessage,
+): Promise<{ value: unknown } | { error: string }> {
+  let size = 0;
+  const chunks: Buffer[] = [];
+
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.byteLength;
+    if (size > MAX_REQUEST_BODY_BYTES) {
+      return { error: "Request body is too large." };
+    }
+    chunks.push(buffer);
+  }
+
+  try {
+    return { value: JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") };
+  } catch {
+    return { error: "Request body must be valid JSON." };
+  }
+}
+
+function capFindManyArgs(args: Record<string, unknown>) {
+  const take = args.take;
+  if (take === undefined || take === null) {
+    return { ...args, take: DEFAULT_QUERY_LAB_TAKE };
+  }
+
+  if (typeof take !== "number" || !Number.isInteger(take) || take < 1) {
+    return { ...args, take: DEFAULT_QUERY_LAB_TAKE };
+  }
+
+  return {
+    ...args,
+    take: Math.min(take, MAX_QUERY_LAB_TAKE),
+  };
+}
+
+function isQueryLabOperation(value: unknown): value is QueryLabOperation {
+  return (
+    typeof value === "string" &&
+    QUERY_LAB_OPERATIONS.includes(value as (typeof QUERY_LAB_OPERATIONS)[number])
+  );
+}
+
 function delegateNameForModel(modelName: string) {
   return modelName.charAt(0).toLowerCase() + modelName.slice(1);
 }
@@ -488,13 +699,20 @@ function selectFieldsForModel(model: PrismaModelMetadata) {
   }, {});
 }
 
+function isQueryLabDelegate(
+  value: unknown,
+  operation: QueryLabOperation,
+): value is Record<QueryLabOperation, (args: Record<string, unknown>) => Promise<unknown>> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    operation in value &&
+    typeof value[operation as keyof typeof value] === "function"
+  );
+}
+
 function isFindManyDelegate(value: unknown): value is {
-  findMany: (args: {
-    skip: number;
-    take: number;
-    select: Record<string, true>;
-    where?: Record<string, unknown>;
-  }) => Promise<unknown[]>;
+  findMany: (args: Record<string, unknown>) => Promise<unknown[]>;
 } {
   return (
     typeof value === "object" &&
@@ -502,6 +720,10 @@ function isFindManyDelegate(value: unknown): value is {
     "findMany" in value &&
     typeof value.findMany === "function"
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function sendJson(

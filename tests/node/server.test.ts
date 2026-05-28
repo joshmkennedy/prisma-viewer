@@ -1,3 +1,4 @@
+import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { createPrismaApiMiddleware } from "../../src/node/api";
 import { startViewerServer } from "../../src/node/server";
@@ -749,6 +750,673 @@ describe("createPrismaApiMiddleware", () => {
       },
     });
   });
+
+  it("runs Query Lab findMany through the validated model delegate with a default cap", async () => {
+    const calls: unknown[] = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [field({ name: "id", type: "String", isId: true })],
+            },
+          },
+        },
+        user: {
+          findMany: async (args: unknown) => {
+            calls.push(args);
+            return [{ id: "user_1" }];
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+
+    const response = await runMiddlewareWithJsonBody(
+      middleware,
+      { method: "POST", url: "/api/query-lab/preview" },
+      {
+        model: "User",
+        operation: "findMany",
+        argsSource: "{ where: { id: 'user_1' } }",
+      },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(calls).toEqual([{ where: { id: "user_1" }, take: 50 }]);
+    expect(JSON.parse(response.body)).toEqual({
+      model: "User",
+      operation: "findMany",
+      args: { where: { id: "user_1" }, take: 50 },
+      result: [{ id: "user_1" }],
+      rows: [{ id: "user_1" }],
+    });
+  });
+
+  it.each([
+    ["findFirst", { where: { id: "user_1" } }, { id: "user_1" }],
+    ["findUnique", { where: { id: "user_1" } }, { id: "user_1" }],
+    ["count", { where: { id: "user_1" } }, 1],
+  ] as const)("runs Query Lab %s through the validated model delegate", async (
+    operation,
+    expectedArgs,
+    result,
+  ) => {
+    const calls: Array<{ operation: string; args: unknown }> = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [field({ name: "id", type: "String", isId: true })],
+            },
+          },
+        },
+        user: {
+          findFirst: async (args: unknown) => {
+            calls.push({ operation: "findFirst", args });
+            return result;
+          },
+          findUnique: async (args: unknown) => {
+            calls.push({ operation: "findUnique", args });
+            return result;
+          },
+          count: async (args: unknown) => {
+            calls.push({ operation: "count", args });
+            return result;
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+
+    const response = await runMiddlewareWithJsonBody(
+      middleware,
+      { method: "POST", url: "/api/query-lab/preview" },
+      {
+        model: "User",
+        operation,
+        argsSource: "{ where: { id: 'user_1' } }",
+      },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(calls).toEqual([{ operation, args: expectedArgs }]);
+    expect(JSON.parse(response.body)).toEqual({
+      model: "User",
+      operation,
+      args: expectedArgs,
+      result,
+    });
+  });
+
+  it.each(["findFirst", "findUnique"] as const)(
+    "returns an empty single-record result for Query Lab %s misses",
+    async (operation) => {
+      const middleware = createPrismaApiMiddleware({
+        client: {
+          _runtimeDataModel: {
+            models: {
+              User: {
+                name: "User",
+                fields: [field({ name: "id", type: "String", isId: true })],
+              },
+            },
+          },
+          user: {
+            [operation]: async () => null,
+          },
+        },
+        disconnect: async () => undefined,
+      });
+
+      const response = await runMiddlewareWithJsonBody(
+        middleware,
+        { method: "POST", url: "/api/query-lab/preview" },
+        {
+          model: "User",
+          operation,
+          argsSource: "{ where: { id: 'missing' } }",
+        },
+      );
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toEqual({
+        model: "User",
+        operation,
+        args: { where: { id: "missing" } },
+        result: null,
+      });
+    },
+  );
+
+  it("bounds excessive Query Lab take values before executing findMany", async () => {
+    const calls: unknown[] = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [
+                field({ name: "id", type: "String", isId: true }),
+                field({ name: "email", type: "String" }),
+              ],
+            },
+          },
+        },
+        user: {
+          findMany: async (args: unknown) => {
+            calls.push(args);
+            return [];
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+
+    const response = await runMiddlewareWithJsonBody(
+      middleware,
+      { method: "POST", url: "/api/query-lab/preview" },
+      {
+        model: "User",
+        operation: "findMany",
+        argsSource: JSON.stringify({ where: { email: { contains: "example.com" } }, take: 500 }),
+      },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(calls).toEqual([
+      {
+        where: { email: { contains: "example.com" } },
+        take: 100,
+      },
+    ]);
+  });
+
+  it("rejects unknown Query Lab top-level findMany args before reaching delegates", async () => {
+    const delegateCalls: string[] = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [field({ name: "id", type: "String", isId: true })],
+            },
+          },
+        },
+        user: {
+          findMany: async () => {
+            delegateCalls.push("user.findMany");
+            return [];
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+
+    const response = await runMiddlewareWithJsonBody(
+      middleware,
+      { method: "POST", url: "/api/query-lab/preview" },
+      {
+        model: "User",
+        operation: "findMany",
+        argsSource: "{ cursor: { id: 'user_1' } }",
+      },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(delegateCalls).toEqual([]);
+    expect(JSON.parse(response.body)).toEqual({
+      error: {
+        code: "INVALID_QUERY",
+        message:
+          "Unsupported Query Lab findMany arg: cursor. Supported args are where, select, include, orderBy, skip, take.",
+      },
+    });
+  });
+
+  it("rejects unsupported Query Lab count args before reaching delegates", async () => {
+    const delegateCalls: string[] = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [field({ name: "id", type: "String", isId: true })],
+            },
+          },
+        },
+        user: {
+          count: async () => {
+            delegateCalls.push("user.count");
+            return 0;
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+
+    const response = await runMiddlewareWithJsonBody(
+      middleware,
+      { method: "POST", url: "/api/query-lab/preview" },
+      {
+        model: "User",
+        operation: "count",
+        argsSource: "{ select: { id: true } }",
+      },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(delegateCalls).toEqual([]);
+    expect(JSON.parse(response.body)).toEqual({
+      error: {
+        code: "INVALID_QUERY",
+        message: "Unsupported Query Lab count arg: select. Supported args are where.",
+      },
+    });
+  });
+
+  it("rejects Query Lab findFirst take args before reaching delegates", async () => {
+    const delegateCalls: string[] = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [field({ name: "id", type: "String", isId: true })],
+            },
+          },
+        },
+        user: {
+          findFirst: async () => {
+            delegateCalls.push("user.findFirst");
+            return null;
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+
+    const response = await runMiddlewareWithJsonBody(
+      middleware,
+      { method: "POST", url: "/api/query-lab/preview" },
+      {
+        model: "User",
+        operation: "findFirst",
+        argsSource: "{ take: 10 }",
+      },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(delegateCalls).toEqual([]);
+    expect(JSON.parse(response.body)).toEqual({
+      error: {
+        code: "INVALID_QUERY",
+        message:
+          "Unsupported Query Lab findFirst arg: take. Supported args are where, select, include, orderBy, skip.",
+      },
+    });
+  });
+
+  it("rejects unknown Query Lab fields in supported args before reaching delegates", async () => {
+    const delegateCalls: string[] = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [
+                field({ name: "id", type: "String", isId: true }),
+                field({ name: "email", type: "String" }),
+              ],
+            },
+          },
+        },
+        user: {
+          findMany: async () => {
+            delegateCalls.push("user.findMany");
+            return [];
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+
+    const response = await runMiddlewareWithJsonBody(
+      middleware,
+      { method: "POST", url: "/api/query-lab/preview" },
+      {
+        model: "User",
+        operation: "findMany",
+        argsSource: "{ where: { missingField: 'value' } }",
+      },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(delegateCalls).toEqual([]);
+    expect(JSON.parse(response.body)).toEqual({
+      error: {
+        code: "INVALID_QUERY",
+        message: "Unknown field where.missingField on model User.",
+      },
+    });
+  });
+
+  it("rejects invalid Query Lab enum values before reaching delegates", async () => {
+    const delegateCalls: string[] = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          enums: {
+            Role: ["ADMIN", "USER"],
+          },
+          models: {
+            User: {
+              name: "User",
+              fields: [
+                field({ name: "id", type: "String", isId: true }),
+                field({ name: "role", kind: "enum", type: "Role" }),
+              ],
+            },
+          },
+        },
+        user: {
+          findMany: async () => {
+            delegateCalls.push("user.findMany");
+            return [];
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+
+    const response = await runMiddlewareWithJsonBody(
+      middleware,
+      { method: "POST", url: "/api/query-lab/preview" },
+      {
+        model: "User",
+        operation: "findMany",
+        argsSource: "{ where: { role: { in: ['ADMIN', 'OWNER'] } } }",
+      },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(delegateCalls).toEqual([]);
+    expect(JSON.parse(response.body)).toEqual({
+      error: {
+        code: "INVALID_QUERY",
+        message: "Invalid enum value for where.role.in.1: OWNER. Expected one of ADMIN, USER.",
+      },
+    });
+  });
+
+  it("allows valid Query Lab where, select, include, and orderBy args", async () => {
+    const calls: unknown[] = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          enums: {
+            Role: ["ADMIN", "USER"],
+          },
+          models: {
+            User: {
+              name: "User",
+              fields: [
+                field({ name: "id", type: "String", isId: true }),
+                field({ name: "email", type: "String" }),
+                field({ name: "role", kind: "enum", type: "Role" }),
+                field({ name: "posts", kind: "object", type: "Post", isList: true }),
+              ],
+            },
+            Post: {
+              name: "Post",
+              fields: [
+                field({ name: "id", type: "String", isId: true }),
+                field({ name: "title", type: "String" }),
+                field({ name: "author", kind: "object", type: "User" }),
+              ],
+            },
+          },
+        },
+        user: {
+          findMany: async (args: unknown) => {
+            calls.push(args);
+            return [{ id: "user_1", email: "admin@example.com" }];
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+
+    const response = await runMiddlewareWithJsonBody(
+      middleware,
+      { method: "POST", url: "/api/query-lab/preview" },
+      {
+        model: "User",
+        operation: "findMany",
+        argsSource: `{
+          where: {
+            OR: [
+              { email: { contains: "example.com" } },
+              { role: "ADMIN" }
+            ]
+          },
+          select: {
+            id: true,
+            email: true,
+            posts: {
+              where: { title: { contains: "Prisma" } },
+              select: { id: true, title: true },
+              orderBy: [{ title: "asc" }],
+              take: 5
+            }
+          },
+          include: {
+            posts: {
+              where: { title: { startsWith: "Query" } },
+              select: { id: true }
+            }
+          },
+          orderBy: [{ email: "asc" }],
+          skip: 0,
+          take: 10
+        }`,
+      },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(calls).toEqual([
+      {
+        where: {
+          OR: [{ email: { contains: "example.com" } }, { role: "ADMIN" }],
+        },
+        select: {
+          id: true,
+          email: true,
+          posts: {
+            where: { title: { contains: "Prisma" } },
+            select: { id: true, title: true },
+            orderBy: [{ title: "asc" }],
+            take: 5,
+          },
+        },
+        include: {
+          posts: {
+            where: { title: { startsWith: "Query" } },
+            select: { id: true },
+          },
+        },
+        orderBy: [{ email: "asc" }],
+        skip: 0,
+        take: 10,
+      },
+    ]);
+  });
+
+  it("rejects unknown Query Lab models before reaching any delegate", async () => {
+    const delegateCalls: string[] = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [field({ name: "id", type: "String", isId: true })],
+            },
+          },
+        },
+        post: {
+          findMany: async () => {
+            delegateCalls.push("post.findMany");
+            return [];
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+
+    const response = await runMiddlewareWithJsonBody(
+      middleware,
+      { method: "POST", url: "/api/query-lab/preview" },
+      {
+        model: "Post",
+        operation: "findMany",
+        argsSource: "{}",
+      },
+    );
+
+    expect(response.statusCode).toBe(404);
+    expect(delegateCalls).toEqual([]);
+    expect(JSON.parse(response.body)).toEqual({
+      error: {
+        code: "MODEL_NOT_FOUND",
+        message: "Unknown Prisma model: Post.",
+      },
+    });
+  });
+
+  it("keeps Query Lab preview read-only by rejecting unsupported operations", async () => {
+    const delegateCalls: string[] = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [field({ name: "id", type: "String", isId: true })],
+            },
+          },
+        },
+        user: {
+          findMany: async () => {
+            delegateCalls.push("user.findMany");
+            return [];
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+
+    const response = await runMiddlewareWithJsonBody(
+      middleware,
+      { method: "POST", url: "/api/query-lab/preview" },
+      {
+        model: "User",
+        operation: "deleteMany",
+        argsSource: "{}",
+      },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(delegateCalls).toEqual([]);
+    expect(JSON.parse(response.body)).toEqual({
+      error: {
+        code: "OPERATION_NOT_SUPPORTED",
+        message: "Query Lab supports only findMany, findFirst, findUnique, and count.",
+      },
+    });
+  });
+
+  it.each([
+    "create",
+    "createMany",
+    "update",
+    "updateMany",
+    "upsert",
+    "delete",
+    "deleteMany",
+    "$queryRaw",
+    "$queryRawUnsafe",
+    "$executeRaw",
+    "$executeRawUnsafe",
+    "$transaction",
+  ])("rejects Query Lab unsafe operation %s before reaching delegates", async (operation) => {
+    const delegateCalls: string[] = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [field({ name: "id", type: "String", isId: true })],
+            },
+          },
+        },
+        user: {
+          findMany: async () => {
+            delegateCalls.push("user.findMany");
+            return [];
+          },
+          create: async () => {
+            delegateCalls.push("user.create");
+            return {};
+          },
+          update: async () => {
+            delegateCalls.push("user.update");
+            return {};
+          },
+          delete: async () => {
+            delegateCalls.push("user.delete");
+            return {};
+          },
+        },
+        $queryRaw: async () => {
+          delegateCalls.push("$queryRaw");
+          return [];
+        },
+        $transaction: async () => {
+          delegateCalls.push("$transaction");
+          return [];
+        },
+      },
+      disconnect: async () => undefined,
+    });
+
+    const response = await runMiddlewareWithJsonBody(
+      middleware,
+      { method: "POST", url: "/api/query-lab/preview" },
+      {
+        model: "User",
+        operation,
+        argsSource: "{}",
+      },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(delegateCalls).toEqual([]);
+    expect(JSON.parse(response.body)).toMatchObject({
+      error: {
+        code: "OPERATION_NOT_SUPPORTED",
+      },
+    });
+  });
 });
 
 function makeContext(): StartupContext {
@@ -767,6 +1435,23 @@ function runMiddleware(
 ) {
   const response = makeResponse();
   return Promise.resolve(middleware(request as never, response as never, () => undefined)).then(
+    () => response,
+  );
+}
+
+function runMiddlewareWithJsonBody(
+  middleware: ReturnType<typeof createPrismaApiMiddleware>,
+  request: { method: string; url: string },
+  body: unknown,
+) {
+  const stream = Readable.from([JSON.stringify(body)]) as Readable & {
+    method: string;
+    url: string;
+  };
+  stream.method = request.method;
+  stream.url = request.url;
+  const response = makeResponse();
+  return Promise.resolve(middleware(stream as never, response as never, () => undefined)).then(
     () => response,
   );
 }
