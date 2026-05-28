@@ -800,9 +800,71 @@ describe("createPrismaApiMiddleware", () => {
       ],
       prismaCall:
         'prisma.user.findMany({\n  where: {\n    id: "user_1"\n  },\n  take: 50\n})',
+      timing: {
+        durationMs: expect.any(Number),
+      },
+      sql: {
+        events: [],
+      },
       result: [{ id: "user_1" }],
       rows: [{ id: "user_1" }],
     });
+    expect(JSON.parse(response.body).timing.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("returns Query Lab timing and mocked Prisma query event data", async () => {
+    let queryHandler: ((event: unknown) => void) | undefined;
+    const prismaEvents: string[] = [];
+    const middleware = createPrismaApiMiddleware({
+      client: {
+        $on: (event: "query", handler: (event: unknown) => void) => {
+          prismaEvents.push(event);
+          queryHandler = handler;
+        },
+        _runtimeDataModel: {
+          models: {
+            User: {
+              name: "User",
+              fields: [field({ name: "id", type: "String", isId: true })],
+            },
+          },
+        },
+        user: {
+          findMany: async () => {
+            queryHandler?.({
+              query: 'SELECT "User"."id" FROM "User" WHERE "User"."id" = ?',
+              params: '["user_1"]',
+              duration: 12,
+            });
+            return [{ id: "user_1" }];
+          },
+        },
+      },
+      disconnect: async () => undefined,
+    });
+
+    const response = await runMiddlewareWithJsonBody(
+      middleware,
+      { method: "POST", url: "/api/query-lab/preview" },
+      {
+        model: "User",
+        operation: "findMany",
+        argsSource: "{ where: { id: 'user_1' } }",
+      },
+    );
+
+    const body = JSON.parse(response.body);
+    expect(response.statusCode).toBe(200);
+    expect(prismaEvents).toEqual(["query"]);
+    expect(body.timing.durationMs).toEqual(expect.any(Number));
+    expect(body.timing.durationMs).toBeGreaterThanOrEqual(0);
+    expect(body.sql.events).toEqual([
+      {
+        query: 'SELECT "User"."id" FROM "User" WHERE "User"."id" = ?',
+        params: '["user_1"]',
+        durationMs: 12,
+      },
+    ]);
   });
 
   it.each([
@@ -862,8 +924,15 @@ describe("createPrismaApiMiddleware", () => {
       normalizedArgs: expectedArgs,
       normalization: [],
       prismaCall: `prisma.user.${operation}({\n  where: {\n    id: "user_1"\n  }\n})`,
+      timing: {
+        durationMs: expect.any(Number),
+      },
+      sql: {
+        events: [],
+      },
       result,
     });
+    expect(JSON.parse(response.body).timing.durationMs).toBeGreaterThanOrEqual(0);
   });
 
   it.each(["findFirst", "findUnique"] as const)(
@@ -904,8 +973,15 @@ describe("createPrismaApiMiddleware", () => {
         normalizedArgs: { where: { id: "missing" } },
         normalization: [],
         prismaCall: `prisma.user.${operation}({\n  where: {\n    id: "missing"\n  }\n})`,
+        timing: {
+          durationMs: expect.any(Number),
+        },
+        sql: {
+          events: [],
+        },
         result: null,
       });
+      expect(JSON.parse(response.body).timing.durationMs).toBeGreaterThanOrEqual(0);
     },
   );
 

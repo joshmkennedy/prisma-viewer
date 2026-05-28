@@ -37,6 +37,12 @@ vi.mock("@monaco-editor/react", () => ({
   ),
 }));
 
+type QueryLabSqlEvent = {
+  query?: string;
+  params?: string;
+  durationMs?: number;
+};
+
 describe("App model sidebar", () => {
   afterEach(() => {
     cleanup();
@@ -320,6 +326,47 @@ describe("App Query Lab", () => {
       "prisma.user.findMany",
     );
     expect(screen.getByRole("button", { name: "Copy Prisma Client call" })).toBeTruthy();
+  });
+
+  it("renders Query Lab timing, SQL, params, and missing SQL empty states", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+      previewRowsByModel: {
+        User: [{ id: "user_1", email: "ada@example.com" }],
+      },
+      queryLabDiagnostics: {
+        timing: { durationMs: 18.25 },
+        sql: {
+          events: [
+            {
+              query: 'SELECT "User"."id", "User"."email" FROM "User" WHERE "User"."id" = ?',
+              params: '["user_1"]',
+              durationMs: 7,
+            },
+            {
+              durationMs: 2,
+            },
+          ],
+        },
+      },
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+    await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
+
+    expect((await screen.findByLabelText("Query Lab duration")).textContent).toBe("18.3 ms");
+    expect(screen.getByLabelText("Query Lab SQL events")).toBeTruthy();
+    expect(screen.getByLabelText("Query Lab SQL 1").textContent).toContain(
+      'SELECT "User"."id"',
+    );
+    expect(screen.getByLabelText("Query Lab SQL params 1").textContent).toContain(
+      '["user_1"]',
+    );
+    expect(screen.getByText("SQL text was not provided for this event.")).toBeTruthy();
+    expect(screen.getByText("SQL params were not provided for this event.")).toBeTruthy();
   });
 
   it("shows Query Lab loading and error states", async () => {
@@ -1318,11 +1365,16 @@ function mockApiResponses({
   rowsByModel,
   previewRowsByModel = {},
   previewResultsByOperation = {},
+  queryLabDiagnostics = {},
 }: {
   models: ReturnType<typeof model>[];
   rowsByModel: Record<string, Record<string, unknown>[] | Error | "pending">;
   previewRowsByModel?: Record<string, Record<string, unknown>[] | Error>;
   previewResultsByOperation?: Record<string, unknown>;
+  queryLabDiagnostics?: {
+    timing?: { durationMs?: number };
+    sql?: { events?: QueryLabSqlEvent[] };
+  };
 }) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -1381,6 +1433,8 @@ function mockApiResponses({
             normalizedArgs: normalized.args,
             normalization: normalized.normalization,
             prismaCall: formatMockPrismaCall(body.model, operation, normalized.args),
+            timing: queryLabDiagnostics.timing ?? { durationMs: 1 },
+            sql: queryLabDiagnostics.sql ?? { events: [] },
             result,
             rows: operation === "findMany" ? result : undefined,
           };

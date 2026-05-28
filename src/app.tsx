@@ -84,6 +84,12 @@ type QueryLabPreviewResponse = {
   normalizedArgs?: Record<string, unknown>;
   normalization?: QueryLabArgsNormalization[];
   prismaCall?: string;
+  timing?: {
+    durationMs?: number;
+  };
+  sql?: {
+    events?: QueryLabSqlEvent[];
+  };
   result?: unknown;
   rows?: unknown[];
 };
@@ -123,6 +129,12 @@ type QueryLabArgsNormalization =
       originalValue: unknown;
       value: unknown;
     };
+
+type QueryLabSqlEvent = {
+  query?: string;
+  params?: string;
+  durationMs?: number;
+};
 
 type TableFilter = {
   id: string;
@@ -423,6 +435,14 @@ function formatJsonPreview(row: Record<string, unknown>) {
 
 function formatJsonBlock(value: unknown) {
   return JSON.stringify(toStableJsonValue(value), null, 2);
+}
+
+function formatDuration(durationMs: unknown) {
+  if (typeof durationMs !== "number" || !Number.isFinite(durationMs)) {
+    return "Not available";
+  }
+
+  return `${durationMs.toFixed(durationMs < 10 ? 2 : 1)} ms`;
 }
 
 function columnsForRows(rows: unknown[]) {
@@ -755,6 +775,7 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
     (previewMutation.data
       ? `prisma.${previewMutation.data.model.charAt(0).toLowerCase()}${previewMutation.data.model.slice(1)}.${previewMutation.data.operation}(${formatJsonBlock(inspectorArgs ?? {})})`
       : "");
+  const sqlEvents = previewMutation.data?.sql?.events ?? [];
   const canRun =
     Boolean(selectedModel) &&
     modelQuery.isSuccess &&
@@ -1063,6 +1084,76 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                     >
                       {inspectorPrismaCall}
                     </pre>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                  <div className="min-w-0">
+                    <div className="mb-1 text-xs font-medium text-muted-foreground">
+                      Duration
+                    </div>
+                    <div
+                      aria-label="Query Lab duration"
+                      className="rounded-md border border-border bg-surface p-3 font-mono text-[11px] text-code"
+                    >
+                      {formatDuration(previewMutation.data.timing?.durationMs)}
+                    </div>
+                  </div>
+
+                  <div className="min-w-0">
+                    <div className="mb-1 text-xs font-medium text-muted-foreground">
+                      SQL Events
+                    </div>
+                    {sqlEvents.length > 0 ? (
+                      <div aria-label="Query Lab SQL events" className="space-y-2">
+                        {sqlEvents.map((event, index) => (
+                          <div
+                            key={index}
+                            className="rounded-md border border-border bg-surface p-3"
+                          >
+                            <div className="mb-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                              <span className="font-mono">SQL #{index + 1}</span>
+                              {event.durationMs !== undefined ? (
+                                <span className="font-mono">
+                                  {formatDuration(event.durationMs)}
+                                </span>
+                              ) : null}
+                            </div>
+                            {event.query ? (
+                              <pre
+                                aria-label={`Query Lab SQL ${index + 1}`}
+                                className="max-h-48 overflow-auto rounded-md border border-border bg-panel p-2 font-mono text-[11px] text-code"
+                              >
+                                {event.query}
+                              </pre>
+                            ) : (
+                              <p className="text-xs text-muted-foreground">
+                                SQL text was not provided for this event.
+                              </p>
+                            )}
+                            {event.params ? (
+                              <pre
+                                aria-label={`Query Lab SQL params ${index + 1}`}
+                                className="mt-2 max-h-32 overflow-auto rounded-md border border-border bg-panel p-2 font-mono text-[11px] text-code"
+                              >
+                                {event.params}
+                              </pre>
+                            ) : (
+                              <p className="mt-2 text-xs text-muted-foreground">
+                                SQL params were not provided for this event.
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div
+                        aria-label="Query Lab SQL events"
+                        className="rounded-md border border-dashed border-border bg-surface p-3 text-xs text-muted-foreground"
+                      >
+                        No SQL event data was captured for this run.
+                      </div>
+                    )}
                   </div>
                 </div>
               </section>

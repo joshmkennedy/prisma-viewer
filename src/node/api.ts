@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { performance } from "node:perf_hooks";
 import type { PrismaFieldMetadata, PrismaModelMetadata } from "./metadata.js";
 import { MetadataError, discoverPrismaMetadata } from "./metadata.js";
 import type { PrismaRuntime } from "./prisma.js";
@@ -11,6 +12,17 @@ const DEFAULT_QUERY_LAB_TAKE = 50;
 const MAX_QUERY_LAB_TAKE = 100;
 const MAX_REQUEST_BODY_BYTES = 256 * 1024;
 const QUERY_LAB_OPERATIONS = ["findMany", "findFirst", "findUnique", "count"] as const;
+const queryEventRecorders = new WeakMap<PrismaRuntime["client"], QueryEventRecorder>();
+
+type QueryLabSqlEvent = {
+  query?: string;
+  params?: string;
+  durationMs?: number;
+};
+
+type QueryEventRecorder = {
+  events: QueryLabSqlEvent[];
+};
 
 type QueryLabArgsNormalization =
   | {
@@ -215,9 +227,14 @@ async function handleQueryLabPreviewRequest(
       ? normalizeFindManyArgs(validatedArgs.args)
       : { args: validatedArgs.args, normalization: [] };
   const prismaCall = formatPrismaClientCall(model.name, operation, normalized.args);
+  const queryEventRecorder = getQueryEventRecorder(prismaRuntime.client);
+  const queryEventStartIndex = queryEventRecorder.events.length;
+  const startedAt = performance.now();
 
   try {
     const result = await delegate[operation](normalized.args);
+    const durationMs = elapsedMilliseconds(startedAt);
+    const sqlEvents = queryEventRecorder.events.slice(queryEventStartIndex);
     sendJson(response, 200, {
       model: model.name,
       operation,
@@ -225,6 +242,12 @@ async function handleQueryLabPreviewRequest(
       normalizedArgs: normalized.args,
       normalization: normalized.normalization,
       prismaCall,
+      timing: {
+        durationMs,
+      },
+      sql: {
+        events: sqlEvents,
+      },
       result,
       rows: operation === "findMany" && Array.isArray(result) ? result : undefined,
     });
@@ -736,6 +759,52 @@ function normalizeFindManyArgs(args: Record<string, unknown>): {
   }
 
   return { args, normalization: [] };
+}
+
+function getQueryEventRecorder(client: PrismaRuntime["client"]): QueryEventRecorder {
+  const existingRecorder = queryEventRecorders.get(client);
+  if (existingRecorder) return existingRecorder;
+
+  const recorder: QueryEventRecorder = { events: [] };
+  queryEventRecorders.set(client, recorder);
+
+  if (typeof client.$on === "function") {
+    try {
+      client.$on("query", (event) => {
+        const normalizedEvent = normalizeQueryEvent(event);
+        if (normalizedEvent) recorder.events.push(normalizedEvent);
+      });
+    } catch {
+      // Query event logging is optional. Query Lab still reports logical timing.
+    }
+  }
+
+  return recorder;
+}
+
+function normalizeQueryEvent(event: unknown): QueryLabSqlEvent | undefined {
+  if (!isRecord(event)) return undefined;
+
+  const query = typeof event.query === "string" ? event.query : undefined;
+  const params = typeof event.params === "string" ? event.params : undefined;
+  const durationMs =
+    typeof event.duration === "number" && Number.isFinite(event.duration)
+      ? Math.max(0, event.duration)
+      : undefined;
+
+  if (query === undefined && params === undefined && durationMs === undefined) {
+    return undefined;
+  }
+
+  return {
+    ...(query !== undefined ? { query } : {}),
+    ...(params !== undefined ? { params } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+  };
+}
+
+function elapsedMilliseconds(startedAt: number) {
+  return Math.max(0, performance.now() - startedAt);
 }
 
 function formatPrismaClientCall(
