@@ -1,5 +1,11 @@
 # prisma-pad
 
+## 0.1.2
+
+### Patch Changes
+
+- Fix `npx prisma-pad` startup by publishing the TypeScript runtime dependency used by Args Mode parsing.
+
 ## 0.1.1
 
 ### Patch Changes

@@ -1,7 +1,7 @@
 {
   "name": "prisma-pad",
   "private": false,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "repository": {
     "type": "git",
     "url": "https://github.com/joshmkennedy/prisma-pad"
@@ -43,6 +43,7 @@
     "sonner": "^2.0.7",
     "tailwind-merge": "^2.5.5",
     "tailwindcss": "^4.3.0",
+    "typescript": "^5.7.2",
     "vite": "^6.0.1"
   },
   "devDependencies": {
@@ -55,7 +56,6 @@
     "@types/react-dom": "^19.0.0",
     "jsdom": "^29.1.1",
     "prisma": "^6.19.3",
-    "typescript": "^5.7.2",
     "vitest": "^4.1.7"
   }
 }
