@@ -7,6 +7,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/app";
 
 const monacoSetModelMarkers = vi.hoisted(() => vi.fn());
+const monacoDefineTheme = vi.hoisted(() => vi.fn());
+const monacoRegisterLanguage = vi.hoisted(() => vi.fn());
+const monacoSetMonarchTokensProvider = vi.hoisted(() => vi.fn());
+const monacoRegisterCompletionItemProvider = vi.hoisted(() =>
+  vi.fn(() => ({ dispose: vi.fn() })),
+);
 
 vi.mock("sonner", async (importOriginal) => {
   const actual = await importOriginal<typeof import("sonner")>();
@@ -39,7 +45,7 @@ vi.mock("@monaco-editor/react", () => ({
     };
     const monaco = {
       MarkerSeverity: { Warning: 4 },
-      editor: { setModelMarkers: monacoSetModelMarkers },
+      editor: { defineTheme: monacoDefineTheme, setModelMarkers: monacoSetModelMarkers },
       languages: {
         CompletionItemKind: {
           Property: 9,
@@ -49,7 +55,10 @@ vi.mock("@monaco-editor/react", () => ({
           Value: 12,
           Field: 5,
         },
-        registerCompletionItemProvider: vi.fn(() => ({ dispose: vi.fn() })),
+        getLanguages: vi.fn(() => []),
+        register: monacoRegisterLanguage,
+        setMonarchTokensProvider: monacoSetMonarchTokensProvider,
+        registerCompletionItemProvider: monacoRegisterCompletionItemProvider,
       },
     };
     beforeMount?.(monaco);
@@ -217,7 +226,7 @@ describe("App Query Lab", () => {
           body: JSON.stringify({
             model: "User",
             operation: "findMany",
-            argsSource: "{\n  take: 25\n}",
+            argsSource: "{}",
           }),
         }),
       );
@@ -226,6 +235,8 @@ describe("App Query Lab", () => {
     expect(screen.getByRole("table", { name: "Query Lab table result" })).toBeTruthy();
     expect(screen.getAllByText("id").length).toBeGreaterThan(1);
     expect(screen.getAllByText("email").length).toBeGreaterThan(1);
+    expect(screen.getByText("take: safety default 25 applied")).toBeTruthy();
+    expect(screen.queryByText("All displayed args came from the editor input.")).toBeNull();
   });
 
   it("switches Query Lab row-shaped results between table and JSON views", async () => {
@@ -633,6 +644,36 @@ describe("App Query Lab", () => {
     });
   });
 
+  it("uses a dedicated Query Lab Monaco language for completions", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {},
+    });
+
+    renderApp("/query-lab");
+
+    await screen.findByLabelText("Args Mode editor");
+
+    expect(monacoRegisterLanguage).toHaveBeenCalledWith({ id: "query-lab-args" });
+    expect(monacoSetMonarchTokensProvider).toHaveBeenCalledWith(
+      "query-lab-args",
+      expect.anything(),
+    );
+    expect(monacoRegisterCompletionItemProvider).toHaveBeenCalledWith(
+      "query-lab-args",
+      expect.anything(),
+    );
+    expect(monacoDefineTheme).toHaveBeenCalledWith(
+      "query-lab-theme",
+      expect.objectContaining({
+        colors: expect.objectContaining({
+          "editor.background": "#101319",
+          "editorGutter.background": "#14181f",
+        }),
+      }),
+    );
+  });
+
   it("opens a model-specific Query Lab route with the model preselected", async () => {
     const fetchMock = mockApiResponses({
       models: [model("User", ["id", "email"]), model("Post", ["id", "title"])],
@@ -658,7 +699,7 @@ describe("App Query Lab", () => {
           body: JSON.stringify({
             model: "Post",
             operation: "findMany",
-            argsSource: "{\n  take: 25\n}",
+            argsSource: "{}",
           }),
         }),
       );
@@ -683,8 +724,9 @@ describe("App Query Lab", () => {
       (screen.getByRole("button", { name: "Run Query Lab preview" }) as HTMLButtonElement)
         .disabled,
     ).toBe(true);
+    expect(screen.getByRole("button", { name: "User" })).toBeTruthy();
 
-    await userEvent.selectOptions(screen.getByLabelText("Query Lab model"), "User");
+    await userEvent.click(screen.getByRole("button", { name: "User" }));
     await waitFor(() => expect(window.location.pathname).toBe("/query-lab/User"));
     await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
 
@@ -695,7 +737,7 @@ describe("App Query Lab", () => {
           body: JSON.stringify({
             model: "User",
             operation: "findMany",
-            argsSource: "{\n  take: 25\n}",
+            argsSource: "{}",
           }),
         }),
       );
@@ -1819,6 +1861,25 @@ function parseMockQueryLabArgs(argsSource: string | undefined) {
 function normalizeMockQueryLabArgs(operation: string, args: Record<string, unknown>) {
   if (operation !== "findMany") return { args, normalization: [] };
   const take = args.take;
+  if (
+    take === undefined ||
+    take === null ||
+    typeof take !== "number" ||
+    !Number.isInteger(take) ||
+    take < 1
+  ) {
+    return {
+      args: { ...args, take: 25 },
+      normalization: [
+        {
+          path: "take",
+          action: "default",
+          reason: "findManySafetyTake",
+          value: 25,
+        },
+      ],
+    };
+  }
   if (typeof take === "number" && take > 100) {
     return {
       args: { ...args, take: 100 },

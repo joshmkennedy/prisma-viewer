@@ -16,7 +16,7 @@ import { analyzeQueryLabWarnings } from "./query-lab-warnings.js";
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
-const DEFAULT_QUERY_LAB_TAKE = 50;
+const DEFAULT_QUERY_LAB_TAKE = 25;
 const MAX_QUERY_LAB_TAKE = 100;
 const MAX_REQUEST_BODY_BYTES = 256 * 1024;
 const QUERY_LAB_OPERATIONS = ["findMany", "findFirst", "findUnique", "count"] as const;

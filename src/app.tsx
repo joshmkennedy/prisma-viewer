@@ -16,7 +16,7 @@ import {
   useQuery,
 } from "@tanstack/react-query";
 import Editor, { type BeforeMount, type Monaco, type OnMount } from "@monaco-editor/react";
-import type { editor as MonacoEditor } from "monaco-editor";
+import type { editor as MonacoEditor, languages as MonacoLanguages } from "monaco-editor";
 import {
   createRootRoute,
   createRoute,
@@ -216,8 +216,10 @@ const ROW_REFINEMENT_DEBOUNCE_MS = 300;
 const DEFAULT_TABLE_PAGE_SIZE = 100;
 const TABLE_PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
 const ROWS_QUERY_KEY = "modelRows";
-const QUERY_LAB_DEFAULT_ARGS = "{\n  take: 25\n}";
+const QUERY_LAB_DEFAULT_ARGS = "{}";
 const QUERY_LAB_SAVED_VIEWS_STORAGE_KEY = "prisma-viewer.query-lab.saved-views.v1";
+const QUERY_LAB_LANGUAGE_ID = "query-lab-args";
+const QUERY_LAB_THEME_ID = "query-lab-theme";
 const QUERY_LAB_OPERATIONS: QueryLabOperation[] = [
   "findMany",
   "findFirst",
@@ -225,6 +227,23 @@ const QUERY_LAB_OPERATIONS: QueryLabOperation[] = [
   "count",
 ];
 const QUERY_LAB_MARKER_OWNER = "query-lab-assist";
+
+const THEME_COLORS = {
+  background: "#0c0e13",
+  foreground: "#e1e7ef",
+  surface: "#101319",
+  panel: "#14181f",
+  elevated: "#1b1f27",
+  muted: "#242932",
+  mutedForeground: "#959fac",
+  border: "#2f3542",
+  input: "#323a48",
+  primary: "#12d9b8",
+  accent: "#3191f6",
+  code: "#fad242",
+  warning: "#fa8d2e",
+  danger: "#ea5358",
+} as const;
 
 const DEFAULT_MODEL_ROUTE_SEARCH: ModelRouteSearch = {
   page: 1,
@@ -265,6 +284,83 @@ function setQueryLabEditorMarkers(
     };
   });
   monaco.editor.setModelMarkers(model, QUERY_LAB_MARKER_OWNER, markers);
+}
+
+function registerQueryLabLanguage(monaco: Monaco) {
+  if (
+    !monaco.languages
+      .getLanguages()
+      .some((language: MonacoLanguages.ILanguageExtensionPoint) =>
+        language.id === QUERY_LAB_LANGUAGE_ID
+      )
+  ) {
+    monaco.languages.register({ id: QUERY_LAB_LANGUAGE_ID });
+    monaco.languages.setMonarchTokensProvider(QUERY_LAB_LANGUAGE_ID, {
+      tokenizer: {
+        root: [
+          [/[{}[\]:,]/, "delimiter"],
+          [/"([^"\\]|\\.)*$/, "string.invalid"],
+          [/"/, { token: "string.quote", next: "@string" }],
+          [/'([^'\\]|\\.)*$/, "string.invalid"],
+          [/'/, { token: "string.quote", next: "@singleString" }],
+          [/\b(true|false|null)\b/, "constant"],
+          [/\b\d+(\.\d+)?\b/, "number"],
+          [/[A-Za-z_$][\w$]*/, "identifier"],
+        ],
+        string: [
+          [/[^\\"]+/, "string"],
+          [/\\./, "string.escape"],
+          [/"/, { token: "string.quote", next: "@pop" }],
+        ],
+        singleString: [
+          [/[^\\']+/, "string"],
+          [/\\./, "string.escape"],
+          [/'/, { token: "string.quote", next: "@pop" }],
+        ],
+      },
+    });
+  }
+
+  monaco.editor.defineTheme(QUERY_LAB_THEME_ID, {
+    base: "vs-dark",
+    inherit: true,
+    rules: [
+      { token: "delimiter", foreground: THEME_COLORS.mutedForeground.slice(1) },
+      { token: "identifier", foreground: THEME_COLORS.foreground.slice(1) },
+      { token: "constant", foreground: THEME_COLORS.accent.slice(1) },
+      { token: "number", foreground: THEME_COLORS.primary.slice(1) },
+      { token: "string", foreground: THEME_COLORS.code.slice(1) },
+      { token: "string.quote", foreground: THEME_COLORS.code.slice(1) },
+      { token: "string.escape", foreground: THEME_COLORS.accent.slice(1) },
+      { token: "string.invalid", foreground: THEME_COLORS.danger.slice(1) },
+    ],
+    colors: {
+      "editor.background": THEME_COLORS.surface,
+      "editor.foreground": THEME_COLORS.foreground,
+      "editorLineNumber.foreground": THEME_COLORS.mutedForeground,
+      "editorLineNumber.activeForeground": THEME_COLORS.primary,
+      "editorCursor.foreground": THEME_COLORS.primary,
+      "editor.selectionBackground": `${THEME_COLORS.accent}55`,
+      "editor.inactiveSelectionBackground": `${THEME_COLORS.accent}33`,
+      "editor.lineHighlightBackground": THEME_COLORS.panel,
+      "editorLineNumber.dimmedForeground": THEME_COLORS.muted,
+      "editorIndentGuide.background1": THEME_COLORS.border,
+      "editorIndentGuide.activeBackground1": THEME_COLORS.mutedForeground,
+      "editorWidget.background": THEME_COLORS.elevated,
+      "editorWidget.border": THEME_COLORS.border,
+      "editorSuggestWidget.background": THEME_COLORS.elevated,
+      "editorSuggestWidget.border": THEME_COLORS.border,
+      "editorSuggestWidget.foreground": THEME_COLORS.foreground,
+      "editorSuggestWidget.highlightForeground": THEME_COLORS.primary,
+      "editorSuggestWidget.selectedBackground": THEME_COLORS.muted,
+      "editorHoverWidget.background": THEME_COLORS.elevated,
+      "editorHoverWidget.border": THEME_COLORS.border,
+      "editorMarkerNavigation.background": THEME_COLORS.panel,
+      "editorWarning.foreground": THEME_COLORS.warning,
+      "editorError.foreground": THEME_COLORS.danger,
+      "editorGutter.background": THEME_COLORS.panel,
+    },
+  });
 }
 
 function createQueryClient() {
@@ -1179,10 +1275,11 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
 
   const handleQueryLabEditorBeforeMount = useCallback<BeforeMount>((monaco) => {
     queryLabMonacoRef.current = monaco;
+    registerQueryLabLanguage(monaco);
     if (queryLabCompletionProviderRef.current) return;
 
     queryLabCompletionProviderRef.current =
-      monaco.languages.registerCompletionItemProvider("javascript", {
+      monaco.languages.registerCompletionItemProvider(QUERY_LAB_LANGUAGE_ID, {
         triggerCharacters: [":", "{", ",", "\"", "'"],
         provideCompletionItems: (
           model: MonacoEditor.ITextModel,
@@ -1420,6 +1517,24 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
                   Model "{initialModelName ?? selectedModelName}" is no longer available. Select a
                   valid model to continue.
                 </p>
+                {models.length > 0 ? (
+                  <div
+                    className="mt-3 flex flex-wrap gap-1.5"
+                    aria-label="Available Query Lab models"
+                  >
+                    {models.map((model) => (
+                      <Button
+                        key={model.name}
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => selectQueryLabModel(model.name)}
+                      >
+                        {model.name}
+                      </Button>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : selectedModel ? (
               <div className="rounded-md border border-border bg-surface">
@@ -1465,8 +1580,8 @@ function QueryLabRoute({ initialModelName }: { initialModelName: string | null }
             <div className="min-h-[220px] flex-1">
               <Editor
                 height="100%"
-                defaultLanguage="javascript"
-                theme="vs-dark"
+                defaultLanguage={QUERY_LAB_LANGUAGE_ID}
+                theme={QUERY_LAB_THEME_ID}
                 value={argsSource}
                 onChange={(value) => setArgsSource(value ?? "")}
                 beforeMount={handleQueryLabEditorBeforeMount}

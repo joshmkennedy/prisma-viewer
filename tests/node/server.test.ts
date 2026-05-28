@@ -788,18 +788,18 @@ describe("createPrismaApiMiddleware", () => {
     );
 
     expect(response.statusCode).toBe(200);
-    expect(calls).toEqual([{ where: { id: "user_1" }, take: 50 }]);
+    expect(calls).toEqual([{ where: { id: "user_1" }, take: 25 }]);
     expect(JSON.parse(response.body)).toEqual({
       model: "User",
       operation: "findMany",
-      args: { where: { id: "user_1" }, take: 50 },
-      normalizedArgs: { where: { id: "user_1" }, take: 50 },
+      args: { where: { id: "user_1" }, take: 25 },
+      normalizedArgs: { where: { id: "user_1" }, take: 25 },
       normalization: [
         {
           path: "take",
           action: "default",
           reason: "findManySafetyTake",
-          value: 50,
+          value: 25,
         },
       ],
       warnings: [
@@ -818,7 +818,7 @@ describe("createPrismaApiMiddleware", () => {
         responseSizeBytes: expect.any(Number),
       },
       prismaCall:
-        'prisma.user.findMany({\n  where: {\n    id: "user_1"\n  },\n  take: 50\n})',
+        'prisma.user.findMany({\n  where: {\n    id: "user_1"\n  },\n  take: 25\n})',
       timing: {
         durationMs: expect.any(Number),
       },
