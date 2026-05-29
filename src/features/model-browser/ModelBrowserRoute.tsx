@@ -1,15 +1,18 @@
 import { flexRender, getCoreRowModel, useReactTable, type ColumnDef, type PaginationState, type SortingState, type Updater } from "@tanstack/react-table";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ChevronLeft, ChevronRight, Code2, Database, Filter, Plus, RefreshCcw, Search, TableProperties, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Code2, Filter, Plus, RefreshCcw, Search, TableProperties, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { AppHeader } from "../../app/AppHeader";
 import { Button } from "../../components/ui/button";
+import { Tabs, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { fetchModelMetadata, fetchModelRows } from "../../api/prisma-pad-client";
 import type { Model } from "../../domain/prisma-metadata";
-import { formatFieldType, formatValue, getCellTone } from "../../domain/row-formatting";
+import { formatFieldType, formatJsonBlock, formatValue, getCellTone } from "../../domain/row-formatting";
 import { RecordPreview } from "../record-preview/RecordPreview";
 import type { PreviewMode } from "../record-preview/record-preview-model";
+import { QueryInspectorPanel } from "../query-inspector/QueryInspectorPanel";
 import { cn } from "../../lib/utils";
 import { DEFAULT_TABLE_PAGE_SIZE, ROW_REFINEMENT_DEBOUNCE_MS, ROWS_QUERY_KEY, TABLE_PAGE_SIZE_OPTIONS, createModelTableBrowser, enumValuesForField, operatorsForField, type ModelRowsRequest, type TableFilter, type TableRefinements, type TableRow } from "./model-table-controller";
 import {
@@ -29,6 +32,8 @@ type RowLoadState =
   | { status: "loading"; rows: Record<string, unknown>[]; error: null }
   | { status: "success"; rows: Record<string, unknown>[]; error: null }
   | { status: "error"; rows: Record<string, unknown>[]; error: string };
+
+type ContextPanelMode = "record" | "query";
 
 function useDebouncedValue<T>(value: T, delayMs: number) {
   const [debouncedValue, setDebouncedValue] = useState(value);
@@ -76,6 +81,8 @@ export function ModelBrowserRoute({
     filters: [],
   });
   const [previewMode, setPreviewMode] = useState<PreviewMode>("fields");
+  const [contextPanelMode, setContextPanelMode] = useState<ContextPanelMode>("record");
+  const [isContextPanelCollapsed, setIsContextPanelCollapsed] = useState(false);
   const [optimisticSelectedRowIndex, setOptimisticSelectedRowIndex] = useState<number | null>(
     null,
   );
@@ -317,6 +324,7 @@ export function ModelBrowserRoute({
     rowState.status !== "loading" &&
     !rowQuery.isPlaceholderData &&
     rowState.rows.length === pagination.pageSize;
+  const tableQueryInspector = rowQuery.isPlaceholderData ? null : rowQuery.data?.query ?? null;
 
   useEffect(() => {
     if (!selectedModel) return;
@@ -405,47 +413,24 @@ export function ModelBrowserRoute({
     }
   }
 
+  function updateContextPanelMode(value: string) {
+    if (value === "record" || value === "query") {
+      setContextPanelMode(value);
+    }
+  }
+
   return (
     <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground shadow-tool">
-      <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-surface/95 px-3 backdrop-blur">
-        <Link to="/" className="flex min-w-0 items-center gap-2">
-          <div className="flex h-7 w-7 items-center justify-center rounded-md border border-border bg-elevated shadow-sm">
-            <Database className="h-4 w-4 text-primary" aria-hidden="true" />
-          </div>
-          <div className="min-w-0">
-            <h1 className="truncate text-sm font-semibold">Prisma Pad</h1>
-            <p className="truncate font-mono text-[10px] uppercase text-muted-foreground">
-              read-only local database viewer
-            </p>
-          </div>
-        </Link>
-        <div className="flex items-center gap-2">
-          <Link
-            to="/query-lab"
-            className="rounded-md border border-border bg-elevated px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
-          >
-            Query Lab
-          </Link>
-          <span className="hidden items-center gap-1.5 rounded border border-border bg-elevated px-2 py-1 font-mono text-[11px] font-medium text-muted-foreground sm:inline-flex">
-            <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden="true" />
-            Read-only
-          </span>
-          <Button
-            variant="outline"
-            type="button"
-            onClick={refreshRows}
-            disabled={!selectedModel || rowState.status === "loading"}
-            aria-label={
-              selectedModel ? `Refresh ${selectedModel.name} rows` : "Refresh rows"
-            }
-          >
-            <RefreshCcw className="h-3.5 w-3.5" aria-hidden="true" />
-            Refresh
-          </Button>
-        </div>
-      </header>
+      <AppHeader activeRoute="models" />
 
-      <section className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden border-t border-border/70 lg:grid-cols-[240px_minmax(460px,1fr)_360px]">
+      <section
+        className={cn(
+          "grid min-h-0 flex-1 grid-cols-1 overflow-hidden border-t border-border/70",
+          isContextPanelCollapsed
+            ? "lg:grid-cols-[240px_minmax(460px,1fr)_48px]"
+            : "lg:grid-cols-[240px_minmax(460px,1fr)_360px]",
+        )}
+      >
         <aside className="flex min-h-0 flex-col border-b border-border bg-panel lg:border-b-0 lg:border-r">
           <div className="shrink-0 border-b border-border bg-surface/60 p-3">
             <label className="relative block">
@@ -515,6 +500,18 @@ export function ModelBrowserRoute({
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
+                {selectedModel ? (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    type="button"
+                    onClick={refreshRows}
+                    disabled={rowState.status === "loading"}
+                    aria-label={`Refresh ${selectedModel.name} rows`}
+                  >
+                    <RefreshCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                  </Button>
+                ) : null}
                 {selectedModel ? (
                   <Link
                     to="/query-lab/$modelName"
@@ -915,23 +912,123 @@ export function ModelBrowserRoute({
           ) : null}
         </section>
 
-        <aside className="flex min-h-0 flex-col bg-panel">
-          <div className="flex h-11 shrink-0 items-center justify-between border-b border-border bg-surface/70 px-3">
-            <div className="flex min-w-0 items-center gap-2">
-              <TableProperties className="h-4 w-4 text-primary" />
-              <h2 className="truncate text-sm font-semibold">Record Preview</h2>
+        <aside className="flex min-h-0 flex-col overflow-hidden bg-panel">
+          <div
+            className={cn(
+              "flex h-11 shrink-0 items-center justify-between border-b border-border bg-surface/70",
+              isContextPanelCollapsed ? "px-2" : "px-3",
+            )}
+          >
+            <div
+              className={cn(
+                "flex min-w-0 items-center gap-2",
+                isContextPanelCollapsed && "sr-only",
+              )}
+            >
+              {contextPanelMode === "query" ? (
+                <Code2 className="h-4 w-4 text-primary" />
+              ) : (
+                <TableProperties className="h-4 w-4 text-primary" />
+              )}
+              <h2 className="truncate text-sm font-semibold">
+                {contextPanelMode === "query" ? "Table Query" : "Record Preview"}
+              </h2>
             </div>
-            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            <div
+              className={cn(
+                "flex items-center gap-2",
+                isContextPanelCollapsed && "w-full justify-center",
+              )}
+            >
+              {selectedModel && !isContextPanelCollapsed ? (
+                <Tabs value={contextPanelMode} onValueChange={updateContextPanelMode}>
+                  <TabsList>
+                    <TabsTrigger
+                      value="record"
+                      currentValue={contextPanelMode}
+                      onValueChange={updateContextPanelMode}
+                      aria-label="Show record preview"
+                    >
+                      Record
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="query"
+                      currentValue={contextPanelMode}
+                      onValueChange={updateContextPanelMode}
+                      aria-label="Show table query inspector"
+                    >
+                      Query
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => setIsContextPanelCollapsed((isCollapsed) => !isCollapsed)}
+                aria-label={
+                  isContextPanelCollapsed
+                    ? "Show record preview panel"
+                    : "Hide record preview panel"
+                }
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {isContextPanelCollapsed ? (
+                  <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+                ) : (
+                  <ChevronRight className="h-4 w-4" aria-hidden="true" />
+                )}
+              </button>
+            </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-auto p-3">
-            <RecordPreview
-              record={selectedRow}
-              fields={tableFields}
-              previewMode={previewMode}
-              onPreviewModeChange={updatePreviewMode}
-              emptyMessage="Select a table row to inspect the full record."
-            />
+          <div
+            className={cn(
+              "min-h-0 flex-1 overflow-auto p-3",
+              isContextPanelCollapsed && "hidden",
+            )}
+          >
+            {contextPanelMode === "query" ? (
+              selectedModel ? (
+                tableQueryInspector ? (
+                  <QueryInspectorPanel
+                    ariaLabel="Table Query Inspector"
+                    heading="Table Query"
+                    title={`${tableQueryInspector.model}.${tableQueryInspector.operation} via prisma.${tableQueryInspector.delegateName}`}
+                    argsLabel="Args"
+                    argsAriaLabel="Table query args"
+                    argsJson={formatJsonBlock(tableQueryInspector.args)}
+                    prismaCall={tableQueryInspector.prismaCall}
+                    prismaCallAriaLabel="Table Prisma Client call"
+                    notesLabel="Contributors"
+                    notesAriaLabel="Table query contributors"
+                    notes={tableQueryInspector.contributors.map((contributor) => contributor.label)}
+                    layout="stack"
+                    className="space-y-3"
+                  />
+                ) : rowState.status === "error" ? (
+                  <div className="rounded-md border border-dashed border-danger/70 bg-surface p-3 text-xs text-muted-foreground">
+                    <p className="font-medium text-danger">Table query unavailable.</p>
+                    <p className="mt-1">{rowState.error}</p>
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-dashed border-border bg-surface p-3 text-xs text-muted-foreground">
+                    Loading table query...
+                  </div>
+                )
+              ) : (
+                <div className="rounded-md border border-dashed border-border bg-surface p-3 text-xs text-muted-foreground">
+                  Select a model to inspect its table query.
+                </div>
+              )
+            ) : (
+              <RecordPreview
+                record={selectedRow}
+                fields={tableFields}
+                previewMode={previewMode}
+                onPreviewModeChange={updatePreviewMode}
+                emptyMessage="Select a table row to inspect the full record."
+              />
+            )}
           </div>
         </aside>
       </section>

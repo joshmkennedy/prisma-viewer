@@ -15,6 +15,31 @@ export type RowsResponse = {
     pageSize: number;
     filtersApplied?: boolean;
   };
+  query?: ModelRowsQueryInspector;
+};
+
+export type ModelRowsQueryInspector = {
+  model: string;
+  delegateName: string;
+  operation: "findMany";
+  args: {
+    where?: Record<string, unknown>;
+    orderBy?: Array<Record<string, "asc" | "desc">>;
+    select: Record<string, true>;
+    skip: number;
+    take: number;
+  };
+  where?: Record<string, unknown>;
+  orderBy?: Array<Record<string, "asc" | "desc">>;
+  select: Record<string, true>;
+  skip: number;
+  take: number;
+  prismaCall: string;
+  contributors: Array<{
+    source: "search" | "filter" | "sort" | "page" | "pageSize" | "select";
+    label: string;
+    path: "where" | "orderBy" | "select" | "skip" | "take";
+  }>;
 };
 
 export async function fetchModelMetadata(signal: AbortSignal): Promise<Model[]> {

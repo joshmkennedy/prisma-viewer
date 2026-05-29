@@ -249,6 +249,38 @@ describe("createPrismaApiMiddleware", () => {
       model: "User",
       rows: [{ id: "user_1", email: "user@example.com" }],
       pagination: { page: 1, pageSize: 50 },
+      query: {
+        model: "User",
+        delegateName: "user",
+        operation: "findMany",
+        args: {
+          select: { id: true, email: true },
+          skip: 0,
+          take: 50,
+        },
+        select: { id: true, email: true },
+        skip: 0,
+        take: 50,
+        prismaCall:
+          "prisma.user.findMany({\n  select: {\n    id: true,\n    email: true\n  },\n  skip: 0,\n  take: 50\n})",
+        contributors: [
+          {
+            source: "select",
+            label: "Visible scalar and enum fields contributed to select",
+            path: "select",
+          },
+          {
+            source: "page",
+            label: "Page 1 contributed skip: 0",
+            path: "skip",
+          },
+          {
+            source: "pageSize",
+            label: "Rows per page 50 contributed take: 50",
+            path: "take",
+          },
+        ],
+      },
     });
   });
 
@@ -290,6 +322,27 @@ describe("createPrismaApiMiddleware", () => {
     expect(JSON.parse(response.body)).toMatchObject({
       rows: [],
       pagination: { page: 3, pageSize: 25 },
+      query: {
+        args: {
+          select: { id: true },
+          skip: 50,
+          take: 25,
+        },
+        skip: 50,
+        take: 25,
+        contributors: expect.arrayContaining([
+          {
+            source: "page",
+            label: "Page 3 contributed skip: 50",
+            path: "skip",
+          },
+          {
+            source: "pageSize",
+            label: "Rows per page 25 contributed take: 25",
+            path: "take",
+          },
+        ]),
+      },
     });
   });
 
@@ -336,6 +389,25 @@ describe("createPrismaApiMiddleware", () => {
         orderBy: [{ email: "desc" }],
       },
     ]);
+    expect(JSON.parse(response.body).query).toMatchObject({
+      model: "User",
+      delegateName: "user",
+      operation: "findMany",
+      args: {
+        orderBy: [{ email: "desc" }],
+        select: { id: true, email: true },
+        skip: 0,
+        take: 50,
+      },
+      orderBy: [{ email: "desc" }],
+      contributors: expect.arrayContaining([
+        {
+          source: "sort",
+          label: "email desc sort contributed to orderBy",
+          path: "orderBy",
+        },
+      ]),
+    });
   });
 
   it("applies read-only search and filter criteria to row queries", async () => {
@@ -399,6 +471,45 @@ describe("createPrismaApiMiddleware", () => {
     expect(JSON.parse(response.body)).toMatchObject({
       rows: [{ id: "user_1", email: "ada@example.com", age: 37 }],
       pagination: { filtersApplied: true },
+      query: {
+        model: "User",
+        delegateName: "user",
+        operation: "findMany",
+        args: {
+          select: { id: true, email: true, age: true },
+          skip: 0,
+          take: 50,
+          where: {
+            AND: [
+              {
+                OR: [
+                  { id: { contains: "ada" } },
+                  { email: { contains: "ada" } },
+                ],
+              },
+              { email: { endsWith: "example.com" } },
+              { age: 37 },
+            ],
+          },
+        },
+        contributors: expect.arrayContaining([
+          {
+            source: "search",
+            label: 'Search "ada" contributed to where',
+            path: "where",
+          },
+          {
+            source: "filter",
+            label: "email filter contributed to where",
+            path: "where",
+          },
+          {
+            source: "filter",
+            label: "age filter contributed to where",
+            path: "where",
+          },
+        ]),
+      },
     });
   });
 

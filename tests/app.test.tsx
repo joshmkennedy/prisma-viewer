@@ -1059,7 +1059,7 @@ describe("App row table", () => {
     renderApp();
 
     expect(await screen.findByText("ada@example.com")).toBeTruthy();
-    expect(screen.getByText("Read-only")).toBeTruthy();
+    expect(screen.queryByText("Read-only")).toBeNull();
     expect(screen.queryByRole("button", { name: /create|edit|delete|save|update/i })).toBeNull();
 
     userRows = [{ id: "user_2", email: "grace@example.com" }];
@@ -1267,6 +1267,69 @@ describe("App row table", () => {
           );
         }),
       ).toBe(true);
+    });
+  });
+
+  it("renders a read-only table query inspector that follows table controls", async () => {
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    mockApiResponses({
+      models: [model("User", ["id", "email", "role"])],
+      rowsByModel: {
+        User: [
+          { id: "user_1", email: "ada@example.com", role: "admin" },
+          { id: "user_2", email: "grace@example.com", role: "member" },
+        ],
+      },
+    });
+
+    renderApp();
+
+    await screen.findByText("ada@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "Show table query inspector" }));
+
+    expect(screen.getByLabelText("Table Query Inspector")).toBeTruthy();
+    expect(screen.getByText("User.findMany via prisma.user")).toBeTruthy();
+    expect(screen.getByLabelText("Table Prisma Client call").textContent).toContain(
+      "prisma.user.findMany",
+    );
+    expect(screen.getByLabelText("Table query args").textContent).toContain('"skip": 0');
+    expect(screen.getByLabelText("Table query args").textContent).toContain('"take": 100');
+    expect(screen.getByLabelText("Table query contributors").textContent).toContain(
+      "Visible scalar and enum fields contributed to select",
+    );
+    expect(screen.queryByLabelText("Args Mode editor")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Run Query Lab preview" })).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Copy Prisma Client call" }));
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining("prisma.user.findMany"));
+
+    await userEvent.selectOptions(screen.getByLabelText("Rows per page"), "25");
+    await waitFor(() => {
+      expect(screen.getByLabelText("Table query args").textContent).toContain('"take": 25');
+      expect(screen.getByLabelText("Table query contributors").textContent).toContain(
+        "Rows per page 25 contributed take: 25",
+      );
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Sort by email" }));
+    await waitFor(() => {
+      expect(screen.getByLabelText("Table query args").textContent).toContain('"orderBy"');
+      expect(screen.getByLabelText("Table query contributors").textContent).toContain(
+        "email asc sort contributed to orderBy",
+      );
+    });
+
+    await userEvent.type(screen.getByLabelText("Search table rows"), "grace");
+    await waitFor(() => {
+      expect(screen.getByLabelText("Table query args").textContent).toContain('"where"');
+      expect(screen.getByLabelText("Table query args").textContent).toContain("grace");
+      expect(screen.getByLabelText("Table query contributors").textContent).toContain(
+        'Search "grace" contributed to where',
+      );
     });
   });
 
@@ -1833,10 +1896,16 @@ function mockApiResponses({
       const rows = rowsByModel[modelName] ?? [];
       if (rows === "pending") return new Promise(() => undefined);
       if (rows instanceof Error) throw rows;
+      const requestUrl = new URL(url, "http://localhost");
+      const modelMetadata = models.find((candidate) => candidate.name === modelName);
 
       return {
         ok: true,
-        json: async () => ({ model: modelName, rows }),
+        json: async () => ({
+          model: modelName,
+          rows,
+          query: createMockTableQuery(modelMetadata, modelName, requestUrl.searchParams),
+        }),
       };
     }
 
@@ -1956,6 +2025,142 @@ function formatMockPrismaCall(modelName: string | undefined, operation: string, 
     ? `${modelName.charAt(0).toLowerCase()}${modelName.slice(1)}`
     : "model";
   return `prisma.${delegateName}.${operation}(${JSON.stringify(args, null, 2)})`;
+}
+
+function createMockTableQuery(
+  modelMetadata: ReturnType<typeof model> | undefined,
+  modelName: string,
+  searchParams: URLSearchParams,
+) {
+  const delegateName = `${modelName.charAt(0).toLowerCase()}${modelName.slice(1)}`;
+  const page = Number(searchParams.get("page") ?? "1");
+  const pageSize = Number(searchParams.get("pageSize") ?? "100");
+  const fields =
+    modelMetadata?.fields.filter((item) => item.kind === "scalar" || item.kind === "enum") ??
+    [];
+  const select = Object.fromEntries(fields.map((item) => [item.name, true]));
+  const search = searchParams.get("search")?.trim() ?? "";
+  const filters = parseMockTableFilters(searchParams.get("filters"));
+  const where = createMockTableWhere(fields, search, filters);
+  const orderBy = parseMockTableSort(searchParams.get("sort"));
+  const args = {
+    ...(where ? { where } : {}),
+    ...(orderBy.length > 0 ? { orderBy } : {}),
+    select,
+    skip: (page - 1) * pageSize,
+    take: pageSize,
+  };
+  const contributors = [
+    ...(search && where
+      ? [{ source: "search", label: `Search "${search}" contributed to where`, path: "where" }]
+      : []),
+    ...filters.map((filter) => ({
+      source: "filter",
+      label: `${filter.field} filter contributed to where`,
+      path: "where",
+    })),
+    ...orderBy.map((sort) => {
+      const [field, direction] = Object.entries(sort)[0] ?? [];
+      return {
+        source: "sort",
+        label: `${field} ${direction} sort contributed to orderBy`,
+        path: "orderBy",
+      };
+    }),
+    {
+      source: "select",
+      label: "Visible scalar and enum fields contributed to select",
+      path: "select",
+    },
+    {
+      source: "page",
+      label: `Page ${page} contributed skip: ${(page - 1) * pageSize}`,
+      path: "skip",
+    },
+    {
+      source: "pageSize",
+      label: `Rows per page ${pageSize} contributed take: ${pageSize}`,
+      path: "take",
+    },
+  ];
+
+  return {
+    model: modelName,
+    delegateName,
+    operation: "findMany",
+    args,
+    ...(where ? { where } : {}),
+    ...(orderBy.length > 0 ? { orderBy } : {}),
+    select,
+    skip: (page - 1) * pageSize,
+    take: pageSize,
+    prismaCall: formatMockPrismaCall(modelName, "findMany", args),
+    contributors,
+  };
+}
+
+function parseMockTableFilters(rawFilters: string | null) {
+  if (!rawFilters) return [];
+  try {
+    const parsed = JSON.parse(rawFilters) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is { field: string; operator: string; value?: string } =>
+        Boolean(item) &&
+        typeof item === "object" &&
+        typeof (item as { field?: unknown }).field === "string" &&
+        typeof (item as { operator?: unknown }).operator === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+function parseMockTableSort(rawSort: string | null): Array<Record<string, "asc" | "desc">> {
+  if (!rawSort) return [];
+  try {
+    const parsed = JSON.parse(rawSort) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const candidate = item as { field?: unknown; direction?: unknown };
+      if (
+        typeof candidate.field !== "string" ||
+        (candidate.direction !== "asc" && candidate.direction !== "desc")
+      ) {
+        return [];
+      }
+      return [{ [candidate.field]: candidate.direction }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function createMockTableWhere(
+  fields: ReturnType<typeof field>[],
+  search: string,
+  filters: Array<{ field: string; operator: string; value?: string }>,
+) {
+  const and: Record<string, unknown>[] = [];
+  const searchableFields = fields.filter((item) => item.kind === "scalar" && item.type === "String");
+  if (search && searchableFields.length > 0) {
+    and.push({
+      OR: searchableFields.map((item) => ({ [item.name]: { contains: search } })),
+    });
+  }
+  for (const filter of filters) {
+    if (filter.operator === "empty") {
+      and.push({ [filter.field]: null });
+    } else if (filter.operator === "notEmpty") {
+      and.push({ [filter.field]: { not: null } });
+    } else if (filter.value) {
+      and.push({ [filter.field]: { [filter.operator]: filter.value } });
+    }
+  }
+  if (and.length === 0) return undefined;
+  if (and.length === 1) return and[0];
+  return { AND: and };
 }
 
 function mockPendingModelsResponse() {

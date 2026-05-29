@@ -1,10 +1,11 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import Editor, { type BeforeMount, type Monaco, type OnMount } from "@monaco-editor/react";
 import type { editor as MonacoEditor } from "monaco-editor";
-import { Link, useNavigate } from "@tanstack/react-router";
-import { Code2, Copy, Database, FileJson, Pencil, Play, Save, TableProperties, Trash2, TriangleAlert } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
+import { Code2, FileJson, Pencil, Play, Save, TableProperties, Trash2, TriangleAlert } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { AppHeader } from "../../app/AppHeader";
 import { Button } from "../../components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { fetchModelMetadata } from "../../api/prisma-pad-client";
@@ -12,6 +13,7 @@ import { previewQueryLab } from "../../api/query-lab-client";
 import { formatFieldType, formatValue } from "../../domain/row-formatting";
 import { RecordPreview } from "../record-preview/RecordPreview";
 import type { PreviewMode } from "../record-preview/record-preview-model";
+import { QueryInspectorPanel } from "../query-inspector/QueryInspectorPanel";
 import { cn } from "../../lib/utils";
 import { formatQueryLabArgsSource } from "../../query-lab-args-format";
 import { type QueryLabAssistContext } from "../../query-lab-editor-assist";
@@ -254,33 +256,7 @@ export function QueryLabRoute({ initialModelName }: { initialModelName: string |
 
   return (
     <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground shadow-tool">
-      <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-surface/95 px-3 backdrop-blur">
-        <Link to="/" className="flex min-w-0 items-center gap-2">
-          <div className="flex h-7 w-7 items-center justify-center rounded-md border border-border bg-elevated shadow-sm">
-            <Database className="h-4 w-4 text-primary" aria-hidden="true" />
-          </div>
-          <div className="min-w-0">
-            <h1 className="truncate text-sm font-semibold">Prisma Pad</h1>
-            <p className="truncate font-mono text-[10px] uppercase text-muted-foreground">
-              query lab
-            </p>
-          </div>
-        </Link>
-        <nav className="flex items-center gap-2">
-          <Link
-            to="/"
-            className="rounded-md border border-border bg-elevated px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
-          >
-            Models
-          </Link>
-          <Link
-            to="/query-lab"
-            className="rounded-md border border-primary/60 bg-primary px-2 py-1 text-xs font-medium text-primary-foreground"
-          >
-            Query Lab
-          </Link>
-        </nav>
-      </header>
+      <AppHeader activeRoute="query-lab" />
 
       <section className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[340px_minmax(0,1fr)]">
         <aside className="flex min-h-0 flex-col border-b border-border bg-panel lg:border-b-0 lg:border-r">
@@ -746,67 +722,21 @@ export function QueryLabRoute({ initialModelName }: { initialModelName: string |
             ) : null}
 
             {queryInspector ? (
-              <section
-                aria-label="Query Inspector"
+              <QueryInspectorPanel
+                ariaLabel="Query Inspector"
+                heading="Query Inspector"
+                title={queryInspector.title}
+                argsLabel="Normalized Args"
+                argsAriaLabel="Normalized Query Lab args"
+                argsJson={queryInspector.normalizedArgsJson}
+                prismaCall={queryInspector.prismaCall}
+                notesLabel="Normalization"
+                notesAriaLabel="Query Lab normalization notes"
+                notes={queryInspector.normalizationMessages}
+                emptyNotesMessage="All displayed args came from the editor input."
+                callFirst={false}
                 className="border-t border-border bg-panel px-3 py-3"
               >
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <div>
-                    <h2 className="text-sm font-semibold">Query Inspector</h2>
-                    <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
-                      {queryInspector.title}
-                    </p>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => {
-                      void navigator.clipboard?.writeText(queryInspector.prismaCall);
-                    }}
-                    aria-label="Copy Prisma Client call"
-                  >
-                    <Copy className="h-3.5 w-3.5" aria-hidden="true" />
-                    Copy
-                  </Button>
-                </div>
-
-                <div className="grid gap-3 lg:grid-cols-2">
-                  <div className="min-w-0">
-                    <div className="mb-1 text-xs font-medium text-muted-foreground">
-                      Normalized Args
-                    </div>
-                    <pre
-                      aria-label="Normalized Query Lab args"
-                      className="max-h-72 overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-[11px] text-code"
-                    >
-                      {queryInspector.normalizedArgsJson}
-                    </pre>
-                    {queryInspector.normalizationMessages.length > 0 ? (
-                      <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
-                        {queryInspector.normalizationMessages.map((message) => (
-                          <li key={message}>{message}</li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="mt-2 text-xs text-muted-foreground">
-                        All displayed args came from the editor input.
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="min-w-0">
-                    <div className="mb-1 text-xs font-medium text-muted-foreground">
-                      Prisma Client Call
-                    </div>
-                    <pre
-                      aria-label="Prisma Client call"
-                      className="max-h-72 overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-[11px] text-code"
-                    >
-                      {queryInspector.prismaCall}
-                    </pre>
-                  </div>
-                </div>
-
                 <div className="mt-3 grid gap-3 lg:grid-cols-2">
                   <div className="min-w-0">
                     <div className="mb-1 text-xs font-medium text-muted-foreground">
@@ -930,7 +860,7 @@ export function QueryLabRoute({ initialModelName }: { initialModelName: string |
                     )}
                   </div>
                 </div>
-              </section>
+              </QueryInspectorPanel>
             ) : null}
           </div>
         </section>
