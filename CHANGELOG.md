@@ -1,5 +1,11 @@
 # prisma-pad
 
+## 0.2.2
+
+### Patch Changes
+
+- c0e48e4: Let Prisma Client resolve the datasource env var from the target schema instead of requiring `DATABASE_URL`, and report the exact missing env var when startup fails.
+
 ## 0.2.1
 
 ### Patch Changes
