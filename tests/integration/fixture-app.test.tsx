@@ -136,7 +136,7 @@ describe("fixture Prisma app integration", () => {
       renderApp();
 
       await userEvent.click(
-        await screen.findByRole("button", { name: "User model, 5 fields" }),
+        await screen.findByRole("button", { name: "User model, 4 columns" }),
       );
       expect(await screen.findByText("2 rows loaded, 4 columns shown")).toBeTruthy();
       await userEvent.click(await screen.findByText("grace@example.com"));

@@ -74,6 +74,20 @@ type RowSort = {
   direction: "asc" | "desc";
 };
 
+type ModelRowsQueryContributor = {
+  source: "search" | "filter" | "sort" | "page" | "pageSize" | "select";
+  label: string;
+  path: "where" | "orderBy" | "select" | "skip" | "take";
+};
+
+type ModelRowsFindManyArgs = {
+  where?: Record<string, unknown>;
+  orderBy?: Record<string, RowSort["direction"]>[];
+  select: Record<string, true>;
+  skip: number;
+  take: number;
+};
+
 export function createPrismaApiMiddleware(prismaRuntime: PrismaRuntime) {
   return async (
     request: IncomingMessage,
@@ -453,7 +467,8 @@ async function handleRowsRequest(
     return;
   }
 
-  const delegate = prismaRuntime.client[delegateNameForModel(model.name)];
+  const delegateName = delegateNameForModel(model.name);
+  const delegate = prismaRuntime.client[delegateName];
   if (!isFindManyDelegate(delegate)) {
     sendJson(response, 500, {
       error: {
@@ -465,14 +480,22 @@ async function handleRowsRequest(
   }
 
   try {
-    const findManyArgs = {
-      skip: (pagination.page - 1) * pagination.pageSize,
-      take: pagination.pageSize,
-      select: selectFieldsForModel(model),
-      ...(where.where ? { where: where.where } : {}),
-      ...(sorting.orderBy ? { orderBy: sorting.orderBy } : {}),
-    };
+    const findManyArgs = buildModelRowsFindManyArgs({
+      model,
+      pagination,
+      where: where.where,
+      orderBy: sorting.orderBy,
+    });
     const rows = await delegate.findMany(findManyArgs);
+    const query = buildModelRowsQueryInspector({
+      model,
+      delegateName,
+      args: findManyArgs,
+      search: filters.search,
+      filters: filters.filters,
+      orderBy: sorting.orderBy,
+      pagination,
+    });
 
     sendJson(response, 200, {
       model: model.name,
@@ -481,6 +504,7 @@ async function handleRowsRequest(
         ...pagination,
         filtersApplied: where.where ? true : undefined,
       },
+      query,
     });
   } catch (error) {
     sendJson(response, 500, {
@@ -493,6 +517,103 @@ async function handleRowsRequest(
       },
     });
   }
+}
+
+function buildModelRowsFindManyArgs({
+  model,
+  pagination,
+  where,
+  orderBy,
+}: {
+  model: PrismaModelMetadata;
+  pagination: { page: number; pageSize: number };
+  where?: Record<string, unknown>;
+  orderBy?: Record<string, RowSort["direction"]>[];
+}): ModelRowsFindManyArgs {
+  return {
+    ...(where ? { where } : {}),
+    ...(orderBy ? { orderBy } : {}),
+    select: selectFieldsForModel(model),
+    skip: (pagination.page - 1) * pagination.pageSize,
+    take: pagination.pageSize,
+  };
+}
+
+function buildModelRowsQueryInspector({
+  model,
+  delegateName,
+  args,
+  search,
+  filters,
+  orderBy,
+  pagination,
+}: {
+  model: PrismaModelMetadata;
+  delegateName: string;
+  args: ModelRowsFindManyArgs;
+  search: string;
+  filters: RowFilter[];
+  orderBy?: Record<string, RowSort["direction"]>[];
+  pagination: { page: number; pageSize: number };
+}) {
+  const contributors: ModelRowsQueryContributor[] = [];
+  const trimmedSearch = search.trim();
+
+  if (trimmedSearch && args.where) {
+    contributors.push({
+      source: "search",
+      label: `Search "${trimmedSearch}" contributed to where`,
+      path: "where",
+    });
+  }
+
+  for (const filter of filters) {
+    contributors.push({
+      source: "filter",
+      label: `${filter.field} filter contributed to where`,
+      path: "where",
+    });
+  }
+
+  for (const sort of orderBy ?? []) {
+    const [field, direction] = Object.entries(sort)[0] ?? [];
+    if (!field || (direction !== "asc" && direction !== "desc")) continue;
+    contributors.push({
+      source: "sort",
+      label: `${field} ${direction} sort contributed to orderBy`,
+      path: "orderBy",
+    });
+  }
+
+  contributors.push({
+    source: "select",
+    label: "Visible scalar and enum fields contributed to select",
+    path: "select",
+  });
+  contributors.push({
+    source: "page",
+    label: `Page ${pagination.page} contributed skip: ${args.skip}`,
+    path: "skip",
+  });
+  contributors.push({
+    source: "pageSize",
+    label: `Rows per page ${pagination.pageSize} contributed take: ${args.take}`,
+    path: "take",
+  });
+
+  return {
+    model: model.name,
+    delegateName,
+    operation: "findMany" as const,
+    args,
+    where: args.where,
+    orderBy: args.orderBy,
+    select: args.select,
+    skip: args.skip,
+    take: args.take,
+    prismaCall: formatPrismaClientCall(model.name, "findMany", args),
+    contributors,
+  };
 }
 
 function parseFilters(searchParams: URLSearchParams): { search: string; filters: RowFilter[] } | { error: string } {

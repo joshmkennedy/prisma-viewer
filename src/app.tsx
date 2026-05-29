@@ -3,6 +3,7 @@ import { createRouter, RouterProvider } from "@tanstack/react-router";
 import { useState } from "react";
 import { createQueryClient } from "./app/query-client";
 import { routeTree } from "./app/routes";
+import { SidebarLayoutProvider } from "./app/sidebar-layout-store";
 
 export function App() {
   const [queryClient] = useState(createQueryClient);
@@ -10,7 +11,9 @@ export function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <SidebarLayoutProvider>
+        <RouterProvider router={router} />
+      </SidebarLayoutProvider>
     </QueryClientProvider>
   );
 }

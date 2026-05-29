@@ -21,6 +21,7 @@ vi.mock("sonner", async (importOriginal) => {
     toast: {
       ...actual.toast,
       error: vi.fn(),
+      success: vi.fn(),
     },
   };
 });
@@ -111,10 +112,10 @@ describe("App model sidebar", () => {
 
     renderApp();
 
-    expect(await screen.findByRole("button", { name: "User model, 2 fields" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "AuditLog model, 3 fields" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "User model, 2 columns" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "AuditLog model, 3 columns" })).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "User model, 2 fields" }).getAttribute("aria-current"),
+      screen.getByRole("button", { name: "User model, 2 columns" }).getAttribute("aria-current"),
     ).toBe("true");
     expect(await screen.findByText("1 row loaded, 2 columns shown")).toBeTruthy();
     expect(screen.getByText("email")).toBeTruthy();
@@ -155,7 +156,7 @@ describe("App model sidebar", () => {
     renderApp();
 
     const projectButton = await screen.findByRole("button", {
-      name: "Project model, 3 fields",
+      name: "Project model, 3 columns",
     });
     await userEvent.click(projectButton);
 
@@ -235,6 +236,7 @@ describe("App Query Lab", () => {
     expect(screen.getByRole("table", { name: "Query Lab table result" })).toBeTruthy();
     expect(screen.getAllByText("id").length).toBeGreaterThan(1);
     expect(screen.getAllByText("email").length).toBeGreaterThan(1);
+    await openQueryLabContextPanel();
     expect(screen.getByText("take: safety default 25 applied")).toBeTruthy();
     expect(screen.queryByText("All displayed args came from the editor input.")).toBeNull();
   });
@@ -289,6 +291,7 @@ describe("App Query Lab", () => {
     await screen.findByLabelText("Args Mode editor");
     await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
 
+    await openQueryLabContextPanel();
     expect(await screen.findByLabelText("Query Lab record preview")).toBeTruthy();
     expect(screen.getByLabelText("Select Query Lab result row 1").getAttribute("aria-selected")).toBe(
       "true",
@@ -341,6 +344,7 @@ describe("App Query Lab", () => {
       0,
     );
 
+    await openQueryLabContextPanel();
     const preview = screen.getByLabelText("Query Lab record preview");
     expect(within(preview).getByText("profile")).toBeTruthy();
     expect(within(preview).getByText('{"role":"admin","flags":["beta"]}')).toBeTruthy();
@@ -480,6 +484,7 @@ describe("App Query Lab", () => {
       );
     });
 
+    await openQueryLabContextPanel();
     expect(await screen.findByLabelText("Query Inspector")).toBeTruthy();
     expect(screen.getByText("User.findMany")).toBeTruthy();
     expect(screen.getByText("take: capped from 500 to 100")).toBeTruthy();
@@ -608,6 +613,7 @@ describe("App Query Lab", () => {
     await screen.findByLabelText("Args Mode editor");
     await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
 
+    await openQueryLabContextPanel();
     expect((await screen.findByLabelText("Query Lab duration")).textContent).toBe("18.3 ms");
     expect(screen.getByLabelText("Query Lab SQL events")).toBeTruthy();
     expect(screen.getByLabelText("Query Lab SQL 1").textContent).toContain(
@@ -616,6 +622,8 @@ describe("App Query Lab", () => {
     expect(screen.getByLabelText("Query Lab SQL params 1").textContent).toContain(
       '["user_1"]',
     );
+    expect(screen.getByRole("button", { name: "Copy Query Lab SQL 1" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy Query Lab SQL params 1" })).toBeTruthy();
     expect(screen.getByText("SQL text was not provided for this event.")).toBeTruthy();
     expect(screen.getByText("SQL params were not provided for this event.")).toBeTruthy();
   });
@@ -644,6 +652,7 @@ describe("App Query Lab", () => {
     await screen.findByLabelText("Args Mode editor");
     await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
 
+    await openQueryLabContextPanel();
     const warnings = await screen.findByLabelText("Query Lab warnings");
     expect(within(warnings).getByText("where.email")).toBeTruthy();
     expect(
@@ -1059,7 +1068,7 @@ describe("App row table", () => {
     renderApp();
 
     expect(await screen.findByText("ada@example.com")).toBeTruthy();
-    expect(screen.getByText("Read-only")).toBeTruthy();
+    expect(screen.queryByText("Read-only")).toBeNull();
     expect(screen.queryByRole("button", { name: /create|edit|delete|save|update/i })).toBeNull();
 
     userRows = [{ id: "user_2", email: "grace@example.com" }];
@@ -1270,6 +1279,96 @@ describe("App row table", () => {
     });
   });
 
+  it("renders a read-only table query inspector that follows table controls", async () => {
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    mockApiResponses({
+      models: [model("User", ["id", "email", "role"])],
+      rowsByModel: {
+        User: [
+          { id: "user_1", email: "ada@example.com", role: "admin" },
+          { id: "user_2", email: "grace@example.com", role: "member" },
+        ],
+      },
+    });
+
+    renderApp();
+
+    await screen.findByText("ada@example.com");
+    await openModelContextPanel();
+    await userEvent.click(screen.getByRole("button", { name: "Show table query inspector" }));
+
+    expect(screen.getByLabelText("Table Query Inspector")).toBeTruthy();
+    expect(screen.getByText("User.findMany via prisma.user")).toBeTruthy();
+    expect(screen.getByLabelText("Table Prisma Client call").textContent).toContain(
+      "prisma.user.findMany",
+    );
+    expect(screen.getByLabelText("Table query args").textContent).toContain('"skip": 0');
+    expect(screen.getByLabelText("Table query args").textContent).toContain('"take": 100');
+    expect(screen.getByLabelText("Table query contributors").textContent).toContain(
+      "Visible scalar and enum fields contributed to select",
+    );
+    expect(screen.queryByLabelText("Args Mode editor")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Run Query Lab preview" })).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Copy Prisma Client call" }));
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining("prisma.user.findMany"));
+    expect(toast.success).toHaveBeenCalledWith("Copied to clipboard", {
+      description: "Prisma Client call",
+    });
+
+    await userEvent.selectOptions(screen.getByLabelText("Rows per page"), "25");
+    await waitFor(() => {
+      expect(screen.getByLabelText("Table query args").textContent).toContain('"take": 25');
+      expect(screen.getByLabelText("Table query contributors").textContent).toContain(
+        "Rows per page 25 contributed take: 25",
+      );
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Sort by email" }));
+    await waitFor(() => {
+      expect(screen.getByLabelText("Table query args").textContent).toContain('"orderBy"');
+      expect(screen.getByLabelText("Table query contributors").textContent).toContain(
+        "email asc sort contributed to orderBy",
+      );
+    });
+
+    await userEvent.type(screen.getByLabelText("Search table rows"), "grace");
+    await waitFor(() => {
+      expect(screen.getByLabelText("Table query args").textContent).toContain('"where"');
+      expect(screen.getByLabelText("Table query args").textContent).toContain("grace");
+      expect(screen.getByLabelText("Table query contributors").textContent).toContain(
+        'Search "grace" contributed to where',
+      );
+    });
+  });
+
+  it("defaults the right sidebar to the table query when no row is selected", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {
+        User: [{ id: "user_1", email: "ada@example.com" }],
+      },
+    });
+
+    renderApp();
+
+    await screen.findByText("ada@example.com");
+    await openModelContextPanel();
+
+    expect(screen.getAllByRole("heading", { name: "Table Query" }).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("Table Query Inspector")).toBeTruthy();
+    expect(
+      screen
+        .getByRole("button", { name: "Show table query inspector" })
+        .getAttribute("data-state"),
+    ).toBe("active");
+    expect(screen.queryByText("Select a table row to inspect the full record.")).toBeNull();
+  });
+
   it("drops stale filter, sort, and selected row URL values after metadata and rows load", async () => {
     const filters = encodeURIComponent(
       JSON.stringify([{ field: "missing", operator: "equals", value: "admin" }]),
@@ -1285,7 +1384,8 @@ describe("App row table", () => {
 
     expect(await screen.findByText("ada@example.com")).toBeTruthy();
     expect(screen.queryByLabelText("Filter field")).toBeNull();
-    expect(screen.getByText("Select a table row to inspect the full record.")).toBeTruthy();
+    await openModelContextPanel();
+    expect(screen.getByLabelText("Table Query Inspector")).toBeTruthy();
     await waitFor(() => {
       expect(window.location.search).not.toContain("filters=");
       expect(window.location.search).not.toContain("sort=");
@@ -1320,6 +1420,7 @@ describe("App row table", () => {
     expect(screen.getByRole("row", { name: "Select row 2" }).getAttribute("aria-selected")).toBe(
       "true",
     );
+    await openModelContextPanel();
     expect(screen.getAllByText("user_2").length).toBeGreaterThan(1);
   });
 
@@ -1336,9 +1437,8 @@ describe("App row table", () => {
 
     renderApp();
 
-    expect(
-      await screen.findByText("Select a table row to inspect the full record."),
-    ).toBeTruthy();
+    await openModelContextPanel();
+    expect(await screen.findByLabelText("Table Query Inspector")).toBeTruthy();
 
     await userEvent.click(await screen.findByText("grace@example.com"));
 
@@ -1687,6 +1787,7 @@ describe("App row table", () => {
     renderApp("/model/AuditLog");
 
     await userEvent.click(await screen.findByText("log_1"));
+    await openModelContextPanel();
 
     const previewValue = screen
       .getAllByText('{"action":"invite.created","nested":{"count":2}}')
@@ -1738,6 +1839,7 @@ describe("App row table", () => {
     renderApp("/model/AuditLog");
 
     await userEvent.click(await screen.findByText("log_1"));
+    await openModelContextPanel();
 
     expect(
       screen.getAllByText(
@@ -1833,10 +1935,16 @@ function mockApiResponses({
       const rows = rowsByModel[modelName] ?? [];
       if (rows === "pending") return new Promise(() => undefined);
       if (rows instanceof Error) throw rows;
+      const requestUrl = new URL(url, "http://localhost");
+      const modelMetadata = models.find((candidate) => candidate.name === modelName);
 
       return {
         ok: true,
-        json: async () => ({ model: modelName, rows }),
+        json: async () => ({
+          model: modelName,
+          rows,
+          query: createMockTableQuery(modelMetadata, modelName, requestUrl.searchParams),
+        }),
       };
     }
 
@@ -1958,6 +2066,142 @@ function formatMockPrismaCall(modelName: string | undefined, operation: string, 
   return `prisma.${delegateName}.${operation}(${JSON.stringify(args, null, 2)})`;
 }
 
+function createMockTableQuery(
+  modelMetadata: ReturnType<typeof model> | undefined,
+  modelName: string,
+  searchParams: URLSearchParams,
+) {
+  const delegateName = `${modelName.charAt(0).toLowerCase()}${modelName.slice(1)}`;
+  const page = Number(searchParams.get("page") ?? "1");
+  const pageSize = Number(searchParams.get("pageSize") ?? "100");
+  const fields =
+    modelMetadata?.fields.filter((item) => item.kind === "scalar" || item.kind === "enum") ??
+    [];
+  const select = Object.fromEntries(fields.map((item) => [item.name, true]));
+  const search = searchParams.get("search")?.trim() ?? "";
+  const filters = parseMockTableFilters(searchParams.get("filters"));
+  const where = createMockTableWhere(fields, search, filters);
+  const orderBy = parseMockTableSort(searchParams.get("sort"));
+  const args = {
+    ...(where ? { where } : {}),
+    ...(orderBy.length > 0 ? { orderBy } : {}),
+    select,
+    skip: (page - 1) * pageSize,
+    take: pageSize,
+  };
+  const contributors = [
+    ...(search && where
+      ? [{ source: "search", label: `Search "${search}" contributed to where`, path: "where" }]
+      : []),
+    ...filters.map((filter) => ({
+      source: "filter",
+      label: `${filter.field} filter contributed to where`,
+      path: "where",
+    })),
+    ...orderBy.map((sort) => {
+      const [field, direction] = Object.entries(sort)[0] ?? [];
+      return {
+        source: "sort",
+        label: `${field} ${direction} sort contributed to orderBy`,
+        path: "orderBy",
+      };
+    }),
+    {
+      source: "select",
+      label: "Visible scalar and enum fields contributed to select",
+      path: "select",
+    },
+    {
+      source: "page",
+      label: `Page ${page} contributed skip: ${(page - 1) * pageSize}`,
+      path: "skip",
+    },
+    {
+      source: "pageSize",
+      label: `Rows per page ${pageSize} contributed take: ${pageSize}`,
+      path: "take",
+    },
+  ];
+
+  return {
+    model: modelName,
+    delegateName,
+    operation: "findMany",
+    args,
+    ...(where ? { where } : {}),
+    ...(orderBy.length > 0 ? { orderBy } : {}),
+    select,
+    skip: (page - 1) * pageSize,
+    take: pageSize,
+    prismaCall: formatMockPrismaCall(modelName, "findMany", args),
+    contributors,
+  };
+}
+
+function parseMockTableFilters(rawFilters: string | null) {
+  if (!rawFilters) return [];
+  try {
+    const parsed = JSON.parse(rawFilters) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is { field: string; operator: string; value?: string } =>
+        Boolean(item) &&
+        typeof item === "object" &&
+        typeof (item as { field?: unknown }).field === "string" &&
+        typeof (item as { operator?: unknown }).operator === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+function parseMockTableSort(rawSort: string | null): Array<Record<string, "asc" | "desc">> {
+  if (!rawSort) return [];
+  try {
+    const parsed = JSON.parse(rawSort) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const candidate = item as { field?: unknown; direction?: unknown };
+      if (
+        typeof candidate.field !== "string" ||
+        (candidate.direction !== "asc" && candidate.direction !== "desc")
+      ) {
+        return [];
+      }
+      return [{ [candidate.field]: candidate.direction }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function createMockTableWhere(
+  fields: ReturnType<typeof field>[],
+  search: string,
+  filters: Array<{ field: string; operator: string; value?: string }>,
+) {
+  const and: Record<string, unknown>[] = [];
+  const searchableFields = fields.filter((item) => item.kind === "scalar" && item.type === "String");
+  if (search && searchableFields.length > 0) {
+    and.push({
+      OR: searchableFields.map((item) => ({ [item.name]: { contains: search } })),
+    });
+  }
+  for (const filter of filters) {
+    if (filter.operator === "empty") {
+      and.push({ [filter.field]: null });
+    } else if (filter.operator === "notEmpty") {
+      and.push({ [filter.field]: { not: null } });
+    } else if (filter.value) {
+      and.push({ [filter.field]: { [filter.operator]: filter.value } });
+    }
+  }
+  if (and.length === 0) return undefined;
+  if (and.length === 1) return and[0];
+  return { AND: and };
+}
+
 function mockPendingModelsResponse() {
   const fetchMock = vi.fn(() => new Promise(() => undefined));
   vi.stubGlobal("fetch", fetchMock);
@@ -1974,4 +2218,29 @@ function renderApp(path = "/model/User") {
   vi.stubGlobal("scrollTo", vi.fn());
   window.history.replaceState(null, "", path);
   return render(<App />);
+}
+
+async function openModelContextPanel() {
+  const showName = "Show record preview panel";
+  const hideName = "Hide record preview panel";
+  const button = await waitFor(() => {
+    const showButton = screen.queryByRole("button", { name: showName });
+    const hideButton = screen.queryByRole("button", { name: hideName });
+    if (showButton || hideButton) return showButton ?? hideButton;
+    throw new Error("Record preview panel toggle was not rendered.");
+  });
+
+  if (button.getAttribute("aria-label") === hideName) {
+    return;
+  }
+
+  await userEvent.click(button);
+  await waitFor(() => expect(screen.queryByRole("button", { name: showName })).toBeNull());
+}
+
+async function openQueryLabContextPanel() {
+  const name = "Show Query Lab context panel";
+  const button = await screen.findByRole("button", { name });
+  await userEvent.click(button);
+  await waitFor(() => expect(screen.queryByRole("button", { name })).toBeNull());
 }
