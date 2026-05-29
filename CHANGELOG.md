@@ -1,5 +1,11 @@
 # prisma-pad
 
+## 0.2.0
+
+### Minor Changes
+
+- f2b4702: Add resizable and collapsible workspace panels across Models and Query Lab, including shared navigation, model browsing query inspection, Query Lab context panels, and a resizable editor/results split.
+
 ## 0.1.3
 
 ### Patch Changes
