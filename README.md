@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/prisma-pad-logo.png" alt="Prisma Pad" width="720">
+</p>
+
 # Prisma Pad
 
 Prisma Pad is a local, read-only data viewer for Prisma apps. Run it from an existing project with `npx`, point it at a Prisma application, and it opens a browser UI for inspecting models, rows, records, and supported Prisma Client read queries.
