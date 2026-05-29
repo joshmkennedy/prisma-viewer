@@ -1,4 +1,5 @@
-import { FileJson } from "lucide-react";
+import { Braces, TableProperties } from "lucide-react";
+import { CopyableCodeBlock } from "../../components/ui/copyable-code-block";
 import type { Field } from "../../domain/prisma-metadata";
 import { formatFieldType, formatValue } from "../../domain/row-formatting";
 import { cn } from "../../lib/utils";
@@ -34,18 +35,19 @@ export function RecordPreview({
             value="fields"
             currentValue={previewMode}
             onValueChange={onPreviewModeChange}
+            aria-label="Fields"
+            title="Fields"
           >
-            Fields
+            <TableProperties className="h-3 w-3" aria-hidden="true" />
           </TabsTrigger>
           <TabsTrigger
             value="json"
             currentValue={previewMode}
             onValueChange={onPreviewModeChange}
+            aria-label="JSON"
+            title="JSON"
           >
-            <span className="inline-flex items-center gap-1">
-              <FileJson className="h-3 w-3" />
-              JSON
-            </span>
+            <Braces className="h-3 w-3" aria-hidden="true" />
           </TabsTrigger>
         </TabsList>
       </Tabs>
@@ -78,12 +80,12 @@ export function RecordPreview({
           ))}
         </dl>
       ) : (
-        <pre
-          aria-label="Selected record JSON preview"
-          className="max-h-full max-w-full overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-surface p-3 font-mono text-[11px] leading-5 text-code"
-        >
-          {formatRecordPreviewJson(record)}
-        </pre>
+        <CopyableCodeBlock
+          ariaLabel="Selected record JSON preview"
+          copyLabel="Copy selected record JSON"
+          value={formatRecordPreviewJson(record)}
+          preClassName="max-h-full max-w-full whitespace-pre-wrap break-words leading-5"
+        />
       )}
     </>
   );

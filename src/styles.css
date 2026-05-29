@@ -56,6 +56,30 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+.workspace-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 1024px) {
+  .workspace-layout[data-left-collapsed="false"][data-right-collapsed="false"] {
+    grid-template-columns:
+      var(--workspace-left-width) minmax(var(--workspace-center-min), 1fr)
+      var(--workspace-right-width);
+  }
+
+  .workspace-layout[data-left-collapsed="false"][data-right-collapsed="true"] {
+    grid-template-columns: var(--workspace-left-width) minmax(var(--workspace-center-min), 1fr);
+  }
+
+  .workspace-layout[data-left-collapsed="true"][data-right-collapsed="false"] {
+    grid-template-columns: minmax(var(--workspace-center-min), 1fr) var(--workspace-right-width);
+  }
+
+  .workspace-layout[data-left-collapsed="true"][data-right-collapsed="true"] {
+    grid-template-columns: minmax(var(--workspace-center-min), 1fr);
+  }
+}
+
 button,
 input,
 select {

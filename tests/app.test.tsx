@@ -21,6 +21,7 @@ vi.mock("sonner", async (importOriginal) => {
     toast: {
       ...actual.toast,
       error: vi.fn(),
+      success: vi.fn(),
     },
   };
 });
@@ -111,10 +112,10 @@ describe("App model sidebar", () => {
 
     renderApp();
 
-    expect(await screen.findByRole("button", { name: "User model, 2 fields" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "AuditLog model, 3 fields" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "User model, 2 columns" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "AuditLog model, 3 columns" })).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "User model, 2 fields" }).getAttribute("aria-current"),
+      screen.getByRole("button", { name: "User model, 2 columns" }).getAttribute("aria-current"),
     ).toBe("true");
     expect(await screen.findByText("1 row loaded, 2 columns shown")).toBeTruthy();
     expect(screen.getByText("email")).toBeTruthy();
@@ -155,7 +156,7 @@ describe("App model sidebar", () => {
     renderApp();
 
     const projectButton = await screen.findByRole("button", {
-      name: "Project model, 3 fields",
+      name: "Project model, 3 columns",
     });
     await userEvent.click(projectButton);
 
@@ -235,6 +236,7 @@ describe("App Query Lab", () => {
     expect(screen.getByRole("table", { name: "Query Lab table result" })).toBeTruthy();
     expect(screen.getAllByText("id").length).toBeGreaterThan(1);
     expect(screen.getAllByText("email").length).toBeGreaterThan(1);
+    await openQueryLabContextPanel();
     expect(screen.getByText("take: safety default 25 applied")).toBeTruthy();
     expect(screen.queryByText("All displayed args came from the editor input.")).toBeNull();
   });
@@ -289,6 +291,7 @@ describe("App Query Lab", () => {
     await screen.findByLabelText("Args Mode editor");
     await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
 
+    await openQueryLabContextPanel();
     expect(await screen.findByLabelText("Query Lab record preview")).toBeTruthy();
     expect(screen.getByLabelText("Select Query Lab result row 1").getAttribute("aria-selected")).toBe(
       "true",
@@ -341,6 +344,7 @@ describe("App Query Lab", () => {
       0,
     );
 
+    await openQueryLabContextPanel();
     const preview = screen.getByLabelText("Query Lab record preview");
     expect(within(preview).getByText("profile")).toBeTruthy();
     expect(within(preview).getByText('{"role":"admin","flags":["beta"]}')).toBeTruthy();
@@ -480,6 +484,7 @@ describe("App Query Lab", () => {
       );
     });
 
+    await openQueryLabContextPanel();
     expect(await screen.findByLabelText("Query Inspector")).toBeTruthy();
     expect(screen.getByText("User.findMany")).toBeTruthy();
     expect(screen.getByText("take: capped from 500 to 100")).toBeTruthy();
@@ -608,6 +613,7 @@ describe("App Query Lab", () => {
     await screen.findByLabelText("Args Mode editor");
     await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
 
+    await openQueryLabContextPanel();
     expect((await screen.findByLabelText("Query Lab duration")).textContent).toBe("18.3 ms");
     expect(screen.getByLabelText("Query Lab SQL events")).toBeTruthy();
     expect(screen.getByLabelText("Query Lab SQL 1").textContent).toContain(
@@ -616,6 +622,8 @@ describe("App Query Lab", () => {
     expect(screen.getByLabelText("Query Lab SQL params 1").textContent).toContain(
       '["user_1"]',
     );
+    expect(screen.getByRole("button", { name: "Copy Query Lab SQL 1" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy Query Lab SQL params 1" })).toBeTruthy();
     expect(screen.getByText("SQL text was not provided for this event.")).toBeTruthy();
     expect(screen.getByText("SQL params were not provided for this event.")).toBeTruthy();
   });
@@ -644,6 +652,7 @@ describe("App Query Lab", () => {
     await screen.findByLabelText("Args Mode editor");
     await userEvent.click(screen.getByRole("button", { name: "Run Query Lab preview" }));
 
+    await openQueryLabContextPanel();
     const warnings = await screen.findByLabelText("Query Lab warnings");
     expect(within(warnings).getByText("where.email")).toBeTruthy();
     expect(
@@ -1289,6 +1298,7 @@ describe("App row table", () => {
     renderApp();
 
     await screen.findByText("ada@example.com");
+    await openModelContextPanel();
     await userEvent.click(screen.getByRole("button", { name: "Show table query inspector" }));
 
     expect(screen.getByLabelText("Table Query Inspector")).toBeTruthy();
@@ -1306,6 +1316,9 @@ describe("App row table", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Copy Prisma Client call" }));
     expect(writeText).toHaveBeenCalledWith(expect.stringContaining("prisma.user.findMany"));
+    expect(toast.success).toHaveBeenCalledWith("Copied to clipboard", {
+      description: "Prisma Client call",
+    });
 
     await userEvent.selectOptions(screen.getByLabelText("Rows per page"), "25");
     await waitFor(() => {
@@ -1333,6 +1346,29 @@ describe("App row table", () => {
     });
   });
 
+  it("defaults the right sidebar to the table query when no row is selected", async () => {
+    mockApiResponses({
+      models: [model("User", ["id", "email"])],
+      rowsByModel: {
+        User: [{ id: "user_1", email: "ada@example.com" }],
+      },
+    });
+
+    renderApp();
+
+    await screen.findByText("ada@example.com");
+    await openModelContextPanel();
+
+    expect(screen.getAllByRole("heading", { name: "Table Query" }).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("Table Query Inspector")).toBeTruthy();
+    expect(
+      screen
+        .getByRole("button", { name: "Show table query inspector" })
+        .getAttribute("data-state"),
+    ).toBe("active");
+    expect(screen.queryByText("Select a table row to inspect the full record.")).toBeNull();
+  });
+
   it("drops stale filter, sort, and selected row URL values after metadata and rows load", async () => {
     const filters = encodeURIComponent(
       JSON.stringify([{ field: "missing", operator: "equals", value: "admin" }]),
@@ -1348,7 +1384,8 @@ describe("App row table", () => {
 
     expect(await screen.findByText("ada@example.com")).toBeTruthy();
     expect(screen.queryByLabelText("Filter field")).toBeNull();
-    expect(screen.getByText("Select a table row to inspect the full record.")).toBeTruthy();
+    await openModelContextPanel();
+    expect(screen.getByLabelText("Table Query Inspector")).toBeTruthy();
     await waitFor(() => {
       expect(window.location.search).not.toContain("filters=");
       expect(window.location.search).not.toContain("sort=");
@@ -1383,6 +1420,7 @@ describe("App row table", () => {
     expect(screen.getByRole("row", { name: "Select row 2" }).getAttribute("aria-selected")).toBe(
       "true",
     );
+    await openModelContextPanel();
     expect(screen.getAllByText("user_2").length).toBeGreaterThan(1);
   });
 
@@ -1399,9 +1437,8 @@ describe("App row table", () => {
 
     renderApp();
 
-    expect(
-      await screen.findByText("Select a table row to inspect the full record."),
-    ).toBeTruthy();
+    await openModelContextPanel();
+    expect(await screen.findByLabelText("Table Query Inspector")).toBeTruthy();
 
     await userEvent.click(await screen.findByText("grace@example.com"));
 
@@ -1750,6 +1787,7 @@ describe("App row table", () => {
     renderApp("/model/AuditLog");
 
     await userEvent.click(await screen.findByText("log_1"));
+    await openModelContextPanel();
 
     const previewValue = screen
       .getAllByText('{"action":"invite.created","nested":{"count":2}}')
@@ -1801,6 +1839,7 @@ describe("App row table", () => {
     renderApp("/model/AuditLog");
 
     await userEvent.click(await screen.findByText("log_1"));
+    await openModelContextPanel();
 
     expect(
       screen.getAllByText(
@@ -2179,4 +2218,29 @@ function renderApp(path = "/model/User") {
   vi.stubGlobal("scrollTo", vi.fn());
   window.history.replaceState(null, "", path);
   return render(<App />);
+}
+
+async function openModelContextPanel() {
+  const showName = "Show record preview panel";
+  const hideName = "Hide record preview panel";
+  const button = await waitFor(() => {
+    const showButton = screen.queryByRole("button", { name: showName });
+    const hideButton = screen.queryByRole("button", { name: hideName });
+    if (showButton || hideButton) return showButton ?? hideButton;
+    throw new Error("Record preview panel toggle was not rendered.");
+  });
+
+  if (button.getAttribute("aria-label") === hideName) {
+    return;
+  }
+
+  await userEvent.click(button);
+  await waitFor(() => expect(screen.queryByRole("button", { name: showName })).toBeNull());
+}
+
+async function openQueryLabContextPanel() {
+  const name = "Show Query Lab context panel";
+  const button = await screen.findByRole("button", { name });
+  await userEvent.click(button);
+  await waitFor(() => expect(screen.queryByRole("button", { name })).toBeNull());
 }

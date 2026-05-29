@@ -119,6 +119,7 @@ describe("RecordPreview", () => {
     expect(jsonPreview.textContent).toBe(
       '{\n  "alpha": {\n    "apple": 1,\n    "beta": 2\n  },\n  "zebra": "last"\n}',
     );
+    expect(screen.getByRole("button", { name: "Copy selected record JSON" })).toBeTruthy();
 
     await userEvent.click(screen.getByRole("button", { name: "Fields" }));
 

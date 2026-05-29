@@ -3,7 +3,7 @@ import { Database } from "lucide-react";
 import { type ReactNode } from "react";
 import { cn } from "../lib/utils";
 
-type AppHeaderRoute = "models" | "query-lab";
+export type AppHeaderRoute = "models" | "query-lab";
 
 export function AppHeader({
   activeRoute,

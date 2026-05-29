@@ -42,7 +42,7 @@ export function TabsTrigger({
       type="button"
       data-state={currentValue === value ? "active" : "inactive"}
       className={cn(
-        "h-6 rounded px-2.5 font-mono text-[11px] font-medium uppercase text-muted-foreground transition-colors hover:text-foreground data-[state=active]:bg-surface data-[state=active]:text-primary data-[state=active]:shadow-sm",
+        "h-6 rounded px-2.5 font-mono text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:bg-surface data-[state=active]:text-primary data-[state=active]:shadow-sm",
         className,
       )}
       onClick={() => onValueChange(value)}

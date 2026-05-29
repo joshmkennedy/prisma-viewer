@@ -1,6 +1,5 @@
-import { Copy } from "lucide-react";
 import { type ReactNode } from "react";
-import { Button } from "../../components/ui/button";
+import { CopyableCodeBlock } from "../../components/ui/copyable-code-block";
 import { cn } from "../../lib/utils";
 
 type QueryInspectorPanelProps = {
@@ -12,7 +11,6 @@ type QueryInspectorPanelProps = {
   argsJson: string;
   prismaCall: string;
   prismaCallAriaLabel?: string;
-  copyLabel?: string;
   notesLabel?: string;
   notesAriaLabel?: string;
   notes?: string[];
@@ -32,7 +30,6 @@ export function QueryInspectorPanel({
   argsJson,
   prismaCall,
   prismaCallAriaLabel = "Prisma Client call",
-  copyLabel = "Copy",
   notesLabel,
   notesAriaLabel,
   notes = [],
@@ -56,17 +53,6 @@ export function QueryInspectorPanel({
             {title}
           </p>
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() => {
-            void navigator.clipboard?.writeText(prismaCall);
-          }}
-          aria-label="Copy Prisma Client call"
-        >
-          <Copy className="h-3.5 w-3.5" aria-hidden="true" />
-          {copyLabel}
-        </Button>
       </div>
 
       <div className={cn("grid gap-3", layout === "split" && "lg:grid-cols-2")}>
@@ -74,24 +60,22 @@ export function QueryInspectorPanel({
           <div className="mb-1 text-xs font-medium text-muted-foreground">
             Prisma Client Call
           </div>
-          <pre
-            aria-label={prismaCallAriaLabel}
-            className="max-h-72 overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-[11px] text-code"
-          >
-            {prismaCall}
-          </pre>
+          <CopyableCodeBlock
+            ariaLabel={prismaCallAriaLabel}
+            copyLabel="Copy Prisma Client call"
+            value={prismaCall}
+          />
         </div>
 
         <div className={argsClassName}>
           <div className="mb-1 text-xs font-medium text-muted-foreground">
             {argsLabel}
           </div>
-          <pre
-            aria-label={argsAriaLabel}
-            className="max-h-72 overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-[11px] text-code"
-          >
-            {argsJson}
-          </pre>
+          <CopyableCodeBlock
+            ariaLabel={argsAriaLabel}
+            copyLabel={`Copy ${argsLabel}`}
+            value={argsJson}
+          />
         </div>
       </div>
 

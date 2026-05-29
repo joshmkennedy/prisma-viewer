@@ -4,8 +4,16 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Code2, Filter, Plus, RefreshCcw, Search, TableProperties, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { AppHeader } from "../../app/AppHeader";
+import { useSidebarLayout } from "../../app/sidebar-layout-store";
+import {
+  WorkspaceCenter,
+  WorkspaceContentHeader,
+  WorkspaceLayout,
+  WorkspacePanelHeader,
+  WorkspaceSidebar,
+} from "../../app/WorkspaceLayout";
 import { Button } from "../../components/ui/button";
+import { SidebarToggleButton } from "../../components/ui/sidebar-toggle-button";
 import { Tabs, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { fetchModelMetadata, fetchModelRows } from "../../api/prisma-pad-client";
 import type { Model } from "../../domain/prisma-metadata";
@@ -34,6 +42,11 @@ type RowLoadState =
   | { status: "error"; rows: Record<string, unknown>[]; error: string };
 
 type ContextPanelMode = "record" | "query";
+
+function tableColumnCountForModel(model: Model) {
+  return model.fields.filter((field) => field.kind === "scalar" || field.kind === "enum")
+    .length;
+}
 
 function useDebouncedValue<T>(value: T, delayMs: number) {
   const [debouncedValue, setDebouncedValue] = useState(value);
@@ -82,7 +95,13 @@ export function ModelBrowserRoute({
   });
   const [previewMode, setPreviewMode] = useState<PreviewMode>("fields");
   const [contextPanelMode, setContextPanelMode] = useState<ContextPanelMode>("record");
-  const [isContextPanelCollapsed, setIsContextPanelCollapsed] = useState(false);
+  const {
+    isLeftCollapsed,
+    isRightCollapsed,
+    expandRight: expandContextPanel,
+    toggleLeft: toggleModelList,
+    toggleRight: toggleContextPanel,
+  } = useSidebarLayout("models");
   const [optimisticSelectedRowIndex, setOptimisticSelectedRowIndex] = useState<number | null>(
     null,
   );
@@ -213,6 +232,8 @@ export function ModelBrowserRoute({
   const selectedRowIndex = optimisticSelectedRowIndex ?? tableBrowser.selectedRowIndex;
   const selectedRow =
     selectedRowIndex === null ? null : (rowState.rows[selectedRowIndex] ?? null);
+  const activeContextPanelMode: ContextPanelMode =
+    selectedRow === null ? "query" : contextPanelMode;
 
   useEffect(() => {
     setOptimisticSelectedRowIndex(null);
@@ -404,6 +425,10 @@ export function ModelBrowserRoute({
 
   function selectTableRow(rowIndex: number) {
     setOptimisticSelectedRowIndex(rowIndex);
+    setContextPanelMode("record");
+    if (isRightCollapsed) {
+      expandContextPanel();
+    }
     navigateModelSearch(tableBrowser.commands.selectRow(rowIndex));
   }
 
@@ -420,20 +445,33 @@ export function ModelBrowserRoute({
   }
 
   return (
-    <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground shadow-tool">
-      <AppHeader activeRoute="models" />
-
-      <section
-        className={cn(
-          "grid min-h-0 flex-1 grid-cols-1 overflow-hidden border-t border-border/70",
-          isContextPanelCollapsed
-            ? "lg:grid-cols-[240px_minmax(460px,1fr)_48px]"
-            : "lg:grid-cols-[240px_minmax(460px,1fr)_360px]",
-        )}
-      >
-        <aside className="flex min-h-0 flex-col border-b border-border bg-panel lg:border-b-0 lg:border-r">
-          <div className="shrink-0 border-b border-border bg-surface/60 p-3">
-            <label className="relative block">
+    <WorkspaceLayout
+      activeRoute="models"
+      isLeftCollapsed={isLeftCollapsed}
+      isRightCollapsed={isRightCollapsed}
+      onToggleLeft={toggleModelList}
+      onToggleRight={toggleContextPanel}
+      leftCollapsedLabel="Show models sidebar"
+      leftExpandedLabel="Hide models sidebar"
+      rightCollapsedLabel="Show record preview panel"
+      rightExpandedLabel="Hide record preview panel"
+      leftSidebar={
+        <WorkspaceSidebar side="left">
+          <WorkspacePanelHeader
+            title="Model List"
+            icon={<TableProperties className="h-4 w-4 text-primary" aria-hidden="true" />}
+            actions={
+              <SidebarToggleButton
+                side="left"
+                isCollapsed={false}
+                collapsedLabel="Show models sidebar"
+                expandedLabel="Hide models sidebar"
+                onClick={toggleModelList}
+              />
+            }
+          />
+          <div className="flex h-13 shrink-0 items-center border-b border-border px-3">
+            <label className="relative block min-w-0 flex-1">
               <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <input
                 value={search}
@@ -443,7 +481,7 @@ export function ModelBrowserRoute({
               />
             </label>
           </div>
-          <nav className="min-h-0 flex-1 max-h-52 overflow-auto p-2 lg:max-h-none">
+          <nav className="min-h-0 flex-1 max-h-52 overflow-auto p-3 lg:max-h-none">
             {modelState.status === "loading" ? (
               <div className="rounded-md border border-dashed border-border bg-surface p-3 text-xs text-muted-foreground">
                 Loading models...
@@ -462,36 +500,139 @@ export function ModelBrowserRoute({
                 No models match your search.
               </div>
             ) : null}
-            {filteredModels.map((model) => (
-              <button
-                key={model.name}
-                type="button"
-                onClick={() => selectModel(model.name)}
-                aria-label={`${model.name} model, ${model.fields.length} fields`}
-                aria-current={selectedModel?.name === model.name ? "true" : undefined}
-                className={cn(
-                  "mb-1 grid w-full grid-cols-[1fr_auto] items-center gap-2 rounded-md border border-transparent px-2 py-2 text-left text-xs text-muted-foreground transition-colors hover:border-border hover:bg-elevated hover:text-foreground",
-                  selectedModel?.name === model.name &&
-                    "border-border bg-elevated text-primary shadow-sm",
-                )}
-              >
-                <span className="min-w-0 truncate font-medium">{model.name}</span>
-                <span className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
-                  {model.fields.length}
-                </span>
-              </button>
-            ))}
+            {filteredModels.map((model) => {
+              const columnCount = tableColumnCountForModel(model);
+              return (
+                <button
+                  key={model.name}
+                  type="button"
+                  onClick={() => selectModel(model.name)}
+                  aria-label={`${model.name} model, ${columnCount} columns`}
+                  aria-current={selectedModel?.name === model.name ? "true" : undefined}
+                  className={cn(
+                    "mb-1 grid w-full grid-cols-[1fr_auto] items-center gap-2 rounded-md border border-transparent px-2 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:border-border hover:bg-elevated hover:text-foreground",
+                    selectedModel?.name === model.name &&
+                      "border-border bg-elevated text-primary shadow-sm",
+                  )}
+                >
+                  <span className="min-w-0 truncate font-medium">{model.name}</span>
+                  <span className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                    {columnCount}
+                  </span>
+                </button>
+              );
+            })}
           </nav>
-        </aside>
+        </WorkspaceSidebar>
+      }
+      rightSidebar={
+        <WorkspaceSidebar side="right">
+          <WorkspacePanelHeader
+            title={activeContextPanelMode === "query" ? "Table Query" : "Record Preview"}
+            icon={
+              activeContextPanelMode === "query" ? (
+                <Code2 className="h-4 w-4 text-primary" aria-hidden="true" />
+              ) : (
+                <TableProperties className="h-4 w-4 text-primary" aria-hidden="true" />
+              )
+            }
+            actions={
+              <>
+                {selectedModel ? (
+                  <Tabs value={activeContextPanelMode} onValueChange={updateContextPanelMode}>
+                    <TabsList>
+                      <TabsTrigger
+                        value="record"
+                        currentValue={activeContextPanelMode}
+                        onValueChange={updateContextPanelMode}
+                        aria-label="Show record preview"
+                      >
+                        Record
+                      </TabsTrigger>
+                      <TabsTrigger
+                        value="query"
+                        currentValue={activeContextPanelMode}
+                        onValueChange={updateContextPanelMode}
+                        aria-label="Show table query inspector"
+                      >
+                        Query
+                      </TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                ) : null}
+                <SidebarToggleButton
+                  side="right"
+                  isCollapsed={false}
+                  collapsedLabel="Show record preview panel"
+                  expandedLabel="Hide record preview panel"
+                  onClick={toggleContextPanel}
+                />
+              </>
+            }
+          />
 
-        <section className="flex min-h-0 min-w-0 flex-col overflow-hidden border-b border-border bg-surface lg:border-b-0 lg:border-r">
-          <div className="shrink-0 border-b border-border bg-panel/80 px-3 py-2">
-            <div className="mb-2 flex min-h-8 items-center justify-between gap-3">
-              <div className="min-w-0">
-                <h2 className="truncate text-sm font-semibold">
+          <div className="min-h-0 flex-1 overflow-auto p-3">
+            {activeContextPanelMode === "query" ? (
+              selectedModel ? (
+                tableQueryInspector ? (
+                  <QueryInspectorPanel
+                    ariaLabel="Table Query Inspector"
+                    heading="Table Query"
+                    title={`${tableQueryInspector.model}.${tableQueryInspector.operation} via prisma.${tableQueryInspector.delegateName}`}
+                    argsLabel="Args"
+                    argsAriaLabel="Table query args"
+                    argsJson={formatJsonBlock(tableQueryInspector.args)}
+                    prismaCall={tableQueryInspector.prismaCall}
+                    prismaCallAriaLabel="Table Prisma Client call"
+                    notesLabel="Contributors"
+                    notesAriaLabel="Table query contributors"
+                    notes={tableQueryInspector.contributors.map((contributor) => contributor.label)}
+                    layout="stack"
+                    className="space-y-3"
+                  />
+                ) : rowState.status === "error" ? (
+                  <div className="rounded-md border border-dashed border-danger/70 bg-surface p-3 text-xs text-muted-foreground">
+                    <p className="font-medium text-danger">Table query unavailable.</p>
+                    <p className="mt-1">{rowState.error}</p>
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-dashed border-border bg-surface p-3 text-xs text-muted-foreground">
+                    Loading table query...
+                  </div>
+                )
+              ) : (
+                <div className="rounded-md border border-dashed border-border bg-surface p-3 text-xs text-muted-foreground">
+                  Select a model to inspect its table query.
+                </div>
+              )
+            ) : (
+              <RecordPreview
+                record={selectedRow}
+                fields={tableFields}
+                previewMode={previewMode}
+                onPreviewModeChange={updatePreviewMode}
+                emptyMessage="Select a table row to inspect the full record."
+              />
+            )}
+          </div>
+        </WorkspaceSidebar>
+      }
+    >
+      <WorkspaceCenter>
+        <WorkspaceContentHeader
+          isLeftCollapsed={isLeftCollapsed}
+          isRightCollapsed={isRightCollapsed}
+        >
+            <div
+              className={cn(
+                "flex w-full items-center justify-between gap-3",
+              )}
+            >
+              <div className="flex min-w-0 items-baseline gap-2">
+                <h2 className="shrink-0 truncate text-sm font-semibold">
                   {!isModelRoute ? "Models" : (selectedModel?.name ?? "Model not found")}
                 </h2>
-                <p className="font-mono text-[11px] text-muted-foreground">
+                <p className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
                   {!isModelRoute
                     ? `${models.length} ${models.length === 1 ? "model" : "models"} available`
                     : selectedModel
@@ -503,11 +644,13 @@ export function ModelBrowserRoute({
                 {selectedModel ? (
                   <Button
                     variant="outline"
-                    size="icon"
+                    size="sm"
                     type="button"
                     onClick={refreshRows}
                     disabled={rowState.status === "loading"}
                     aria-label={`Refresh ${selectedModel.name} rows`}
+                    title={`Refresh ${selectedModel.name} rows`}
+                    className="w-7 px-0"
                   >
                     <RefreshCcw className="h-3.5 w-3.5" aria-hidden="true" />
                   </Button>
@@ -516,169 +659,173 @@ export function ModelBrowserRoute({
                   <Link
                     to="/query-lab/$modelName"
                     params={{ modelName: selectedModel.name }}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-elevated px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-elevated font-mono text-[11px] font-medium text-muted-foreground hover:text-foreground"
                     aria-label={`Open Query Lab for ${selectedModel.name}`}
+                    title={`Open Query Lab for ${selectedModel.name}`}
                   >
                     <Code2 className="h-3.5 w-3.5" aria-hidden="true" />
-                    Query Lab
                   </Link>
                 ) : null}
                 {hasPendingTableRefinements ? (
                   <Button
                     type="button"
                     variant="ghost"
+                    size="icon"
                     onClick={clearTableRefinements}
                     aria-label="Clear table search and filters"
+                    title="Clear table search and filters"
                   >
                     <X className="h-3.5 w-3.5" aria-hidden="true" />
-                    Clear
                   </Button>
                 ) : null}
               </div>
             </div>
+        </WorkspaceContentHeader>
 
-            {isModelRoute ? (
-              <div className="flex flex-col gap-2">
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <label className="relative min-w-0 flex-1">
-                  <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                  <input
-                    value={tableSearch}
-                    onChange={(event) => {
-                      navigateModelSearch(tableBrowser.commands.searchRows(event.target.value));
-                    }}
-                    placeholder="Search rows across visible columns"
-                    disabled={!selectedModel}
-                    aria-label="Search table rows"
-                    className="h-8 w-full rounded-md border border-input bg-elevated pl-7 pr-2 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-ring disabled:opacity-50"
-                  />
-                </label>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={addTableFilter}
-                  disabled={!selectedModel || filterableFields.length === 0}
-                  aria-label="Add table filter"
-                >
-                  <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-                  Filter
-                </Button>
-              </div>
+        {isModelRoute ? (
+          <div className="flex h-13 shrink-0 flex-col justify-center gap-2 border-b border-border bg-panel/80 px-3">
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <label className="relative min-w-0 flex-1">
+                <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  value={tableSearch}
+                  onChange={(event) => {
+                    navigateModelSearch(tableBrowser.commands.searchRows(event.target.value));
+                  }}
+                  placeholder="Search rows across visible columns"
+                  disabled={!selectedModel}
+                  aria-label="Search table rows"
+                  className="h-8 w-full rounded-md border border-input bg-elevated pl-7 pr-2 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-ring disabled:opacity-50"
+                />
+              </label>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={addTableFilter}
+                disabled={!selectedModel || filterableFields.length === 0}
+                aria-label="Add table filter"
+                title="Add table filter"
+                className="h-8 w-8"
+              >
+                <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+              </Button>
+            </div>
 
-              {tableFilters.length > 0 ? (
-                <div
-                  className="flex max-h-28 flex-col gap-1.5 overflow-auto"
-                  aria-label="Table filters"
-                >
-                  {tableFilters.map((filter) => {
-                    const field = filterableFields.find(
-                      (candidate) => candidate.name === filter.field,
-                    );
-                    const supportedOperators = operatorsForField(field);
-                    const operator = supportedOperators.find(
-                      (item) => item.value === filter.operator,
-                    );
-                    const enumValues = enumValuesForField(field);
-                    const shouldUseEnumValueSelect =
-                      field?.kind === "enum" &&
-                      operator?.needsValue !== false &&
-                      enumValues.length > 0;
-                    return (
-                      <div
-                        key={filter.id}
-                        className="grid grid-cols-[minmax(7rem,1fr)_minmax(7rem,1fr)_minmax(8rem,1.4fr)_2rem] gap-1.5"
+            {tableFilters.length > 0 ? (
+              <div
+                className="flex max-h-28 flex-col gap-1.5 overflow-auto"
+                aria-label="Table filters"
+              >
+                {tableFilters.map((filter) => {
+                  const field = filterableFields.find(
+                    (candidate) => candidate.name === filter.field,
+                  );
+                  const supportedOperators = operatorsForField(field);
+                  const operator = supportedOperators.find(
+                    (item) => item.value === filter.operator,
+                  );
+                  const enumValues = enumValuesForField(field);
+                  const shouldUseEnumValueSelect =
+                    field?.kind === "enum" &&
+                    operator?.needsValue !== false &&
+                    enumValues.length > 0;
+                  return (
+                    <div
+                      key={filter.id}
+                      className="grid grid-cols-[minmax(7rem,1fr)_minmax(7rem,1fr)_minmax(8rem,1.4fr)_2rem] gap-1.5"
+                    >
+                      <label className="sr-only" htmlFor={`${filter.id}-field`}>
+                        Filter field
+                      </label>
+                      <select
+                        id={`${filter.id}-field`}
+                        value={filter.field}
+                        onChange={(event) =>
+                          updateTableFilterField(filter.id, event.target.value)
+                        }
+                        className="h-8 min-w-0 rounded-md border border-input bg-elevated px-2 text-xs text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring"
                       >
-                        <label className="sr-only" htmlFor={`${filter.id}-field`}>
-                          Filter field
-                        </label>
-                        <select
-                          id={`${filter.id}-field`}
-                          value={filter.field}
-                          onChange={(event) =>
-                            updateTableFilterField(filter.id, event.target.value)
-                          }
-                          className="h-8 min-w-0 rounded-md border border-input bg-elevated px-2 text-xs text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring"
-                        >
-                          {filterableFields.map((field) => (
-                            <option key={field.name} value={field.name}>
-                              {field.name}
-                            </option>
-                          ))}
-                        </select>
-                        <label className="sr-only" htmlFor={`${filter.id}-operator`}>
-                          Filter operator
-                        </label>
-                        <select
-                          id={`${filter.id}-operator`}
-                          value={operator?.value ?? supportedOperators[0]?.value ?? "equals"}
-                          onChange={(event) =>
-                            updateTableFilter(filter.id, {
-                              operator: event.target.value as FilterOperator,
-                              value:
-                                field?.kind === "enum" && event.target.value === "equals"
-                                  ? enumValues[0] ?? filter.value
-                                  : filter.value,
-                            })
-                          }
-                          className="h-8 min-w-0 rounded-md border border-input bg-elevated px-2 text-xs text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring"
-                        >
-                          {supportedOperators.map((item) => (
-                            <option key={item.value} value={item.value}>
-                              {item.label}
-                            </option>
-                          ))}
-                        </select>
-                        <label className="relative min-w-0" htmlFor={`${filter.id}-value`}>
-                          <Filter className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                          {shouldUseEnumValueSelect ? (
-                            <select
-                              id={`${filter.id}-value`}
-                              value={
-                                enumValues.includes(filter.value) ? filter.value : enumValues[0]
-                              }
-                              onChange={(event) =>
-                                updateTableFilter(filter.id, { value: event.target.value })
-                              }
-                              aria-label="Filter value"
-                              className="h-8 w-full rounded-md border border-input bg-elevated pl-7 pr-2 text-xs text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring"
-                            >
-                              {enumValues.map((value) => (
-                                <option key={value} value={value}>
-                                  {value}
-                                </option>
-                              ))}
-                            </select>
-                          ) : (
-                            <input
-                              id={`${filter.id}-value`}
-                              value={filter.value}
-                              onChange={(event) =>
-                                updateTableFilter(filter.id, { value: event.target.value })
-                              }
-                              placeholder={operator?.needsValue === false ? "No value" : "Value"}
-                              disabled={operator?.needsValue === false}
-                              aria-label="Filter value"
-                              className="h-8 w-full rounded-md border border-input bg-elevated pl-7 pr-2 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-ring disabled:text-muted-foreground disabled:opacity-60"
-                            />
-                          )}
-                        </label>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => removeTableFilter(filter.id)}
-                          aria-label="Remove table filter"
-                        >
-                          <X className="h-3.5 w-3.5" aria-hidden="true" />
-                        </Button>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : null}
+                        {filterableFields.map((field) => (
+                          <option key={field.name} value={field.name}>
+                            {field.name}
+                          </option>
+                        ))}
+                      </select>
+                      <label className="sr-only" htmlFor={`${filter.id}-operator`}>
+                        Filter operator
+                      </label>
+                      <select
+                        id={`${filter.id}-operator`}
+                        value={operator?.value ?? supportedOperators[0]?.value ?? "equals"}
+                        onChange={(event) =>
+                          updateTableFilter(filter.id, {
+                            operator: event.target.value as FilterOperator,
+                            value:
+                              field?.kind === "enum" && event.target.value === "equals"
+                                ? enumValues[0] ?? filter.value
+                                : filter.value,
+                          })
+                        }
+                        className="h-8 min-w-0 rounded-md border border-input bg-elevated px-2 text-xs text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring"
+                      >
+                        {supportedOperators.map((item) => (
+                          <option key={item.value} value={item.value}>
+                            {item.label}
+                          </option>
+                        ))}
+                      </select>
+                      <label className="relative min-w-0" htmlFor={`${filter.id}-value`}>
+                        <Filter className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                        {shouldUseEnumValueSelect ? (
+                          <select
+                            id={`${filter.id}-value`}
+                            value={
+                              enumValues.includes(filter.value) ? filter.value : enumValues[0]
+                            }
+                            onChange={(event) =>
+                              updateTableFilter(filter.id, { value: event.target.value })
+                            }
+                            aria-label="Filter value"
+                            className="h-8 w-full rounded-md border border-input bg-elevated pl-7 pr-2 text-xs text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring"
+                          >
+                            {enumValues.map((value) => (
+                              <option key={value} value={value}>
+                                {value}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            id={`${filter.id}-value`}
+                            value={filter.value}
+                            onChange={(event) =>
+                              updateTableFilter(filter.id, { value: event.target.value })
+                            }
+                            placeholder={operator?.needsValue === false ? "No value" : "Value"}
+                            disabled={operator?.needsValue === false}
+                            aria-label="Filter value"
+                            className="h-8 w-full rounded-md border border-input bg-elevated pl-7 pr-2 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-ring disabled:text-muted-foreground disabled:opacity-60"
+                          />
+                        )}
+                      </label>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => removeTableFilter(filter.id)}
+                        aria-label="Remove table filter"
+                        title="Remove table filter"
+                      >
+                        <X className="h-3.5 w-3.5" aria-hidden="true" />
+                      </Button>
+                    </div>
+                  );
+                })}
               </div>
             ) : null}
           </div>
+        ) : null}
 
           <div className="min-h-0 flex-1 overflow-auto">
             {!isModelRoute ? (
@@ -704,7 +851,7 @@ export function ModelBrowserRoute({
                           Model
                         </th>
                         <th className="w-24 border-b border-r border-border px-3 py-2 font-medium text-muted-foreground">
-                          Fields
+                          Columns
                         </th>
                         <th className="w-24 border-b border-r border-border px-3 py-2 font-medium text-muted-foreground">
                           Scalars
@@ -722,6 +869,7 @@ export function ModelBrowserRoute({
                         const scalarCount = model.fields.filter(
                           (field) => field.kind === "scalar",
                         ).length;
+                        const columnCount = tableColumnCountForModel(model);
                         const relationCount = model.fields.filter(
                           (field) => field.kind === "object",
                         ).length;
@@ -744,7 +892,7 @@ export function ModelBrowserRoute({
                               </Link>
                             </td>
                             <td className="border-r border-border px-3 py-1.5 font-mono text-muted-foreground">
-                              {model.fields.length}
+                              {columnCount}
                             </td>
                             <td className="border-r border-border px-3 py-1.5 font-mono text-muted-foreground">
                               {scalarCount}
@@ -894,6 +1042,7 @@ export function ModelBrowserRoute({
                   onClick={() => table.previousPage()}
                   disabled={!selectedModel || !canGoToPreviousPage}
                   aria-label="Previous page"
+                  title="Previous page"
                 >
                   <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
                 </Button>
@@ -904,134 +1053,14 @@ export function ModelBrowserRoute({
                   onClick={() => table.nextPage()}
                   disabled={!selectedModel || !canGoToNextPage}
                   aria-label="Next page"
+                  title="Next page"
                 >
                   <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
                 </Button>
               </div>
             </div>
           ) : null}
-        </section>
-
-        <aside className="flex min-h-0 flex-col overflow-hidden bg-panel">
-          <div
-            className={cn(
-              "flex h-11 shrink-0 items-center justify-between border-b border-border bg-surface/70",
-              isContextPanelCollapsed ? "px-2" : "px-3",
-            )}
-          >
-            <div
-              className={cn(
-                "flex min-w-0 items-center gap-2",
-                isContextPanelCollapsed && "sr-only",
-              )}
-            >
-              {contextPanelMode === "query" ? (
-                <Code2 className="h-4 w-4 text-primary" />
-              ) : (
-                <TableProperties className="h-4 w-4 text-primary" />
-              )}
-              <h2 className="truncate text-sm font-semibold">
-                {contextPanelMode === "query" ? "Table Query" : "Record Preview"}
-              </h2>
-            </div>
-            <div
-              className={cn(
-                "flex items-center gap-2",
-                isContextPanelCollapsed && "w-full justify-center",
-              )}
-            >
-              {selectedModel && !isContextPanelCollapsed ? (
-                <Tabs value={contextPanelMode} onValueChange={updateContextPanelMode}>
-                  <TabsList>
-                    <TabsTrigger
-                      value="record"
-                      currentValue={contextPanelMode}
-                      onValueChange={updateContextPanelMode}
-                      aria-label="Show record preview"
-                    >
-                      Record
-                    </TabsTrigger>
-                    <TabsTrigger
-                      value="query"
-                      currentValue={contextPanelMode}
-                      onValueChange={updateContextPanelMode}
-                      aria-label="Show table query inspector"
-                    >
-                      Query
-                    </TabsTrigger>
-                  </TabsList>
-                </Tabs>
-              ) : null}
-              <button
-                type="button"
-                onClick={() => setIsContextPanelCollapsed((isCollapsed) => !isCollapsed)}
-                aria-label={
-                  isContextPanelCollapsed
-                    ? "Show record preview panel"
-                    : "Hide record preview panel"
-                }
-                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                {isContextPanelCollapsed ? (
-                  <ChevronLeft className="h-4 w-4" aria-hidden="true" />
-                ) : (
-                  <ChevronRight className="h-4 w-4" aria-hidden="true" />
-                )}
-              </button>
-            </div>
-          </div>
-
-          <div
-            className={cn(
-              "min-h-0 flex-1 overflow-auto p-3",
-              isContextPanelCollapsed && "hidden",
-            )}
-          >
-            {contextPanelMode === "query" ? (
-              selectedModel ? (
-                tableQueryInspector ? (
-                  <QueryInspectorPanel
-                    ariaLabel="Table Query Inspector"
-                    heading="Table Query"
-                    title={`${tableQueryInspector.model}.${tableQueryInspector.operation} via prisma.${tableQueryInspector.delegateName}`}
-                    argsLabel="Args"
-                    argsAriaLabel="Table query args"
-                    argsJson={formatJsonBlock(tableQueryInspector.args)}
-                    prismaCall={tableQueryInspector.prismaCall}
-                    prismaCallAriaLabel="Table Prisma Client call"
-                    notesLabel="Contributors"
-                    notesAriaLabel="Table query contributors"
-                    notes={tableQueryInspector.contributors.map((contributor) => contributor.label)}
-                    layout="stack"
-                    className="space-y-3"
-                  />
-                ) : rowState.status === "error" ? (
-                  <div className="rounded-md border border-dashed border-danger/70 bg-surface p-3 text-xs text-muted-foreground">
-                    <p className="font-medium text-danger">Table query unavailable.</p>
-                    <p className="mt-1">{rowState.error}</p>
-                  </div>
-                ) : (
-                  <div className="rounded-md border border-dashed border-border bg-surface p-3 text-xs text-muted-foreground">
-                    Loading table query...
-                  </div>
-                )
-              ) : (
-                <div className="rounded-md border border-dashed border-border bg-surface p-3 text-xs text-muted-foreground">
-                  Select a model to inspect its table query.
-                </div>
-              )
-            ) : (
-              <RecordPreview
-                record={selectedRow}
-                fields={tableFields}
-                previewMode={previewMode}
-                onPreviewModeChange={updatePreviewMode}
-                emptyMessage="Select a table row to inspect the full record."
-              />
-            )}
-          </div>
-        </aside>
-      </section>
-    </main>
+      </WorkspaceCenter>
+    </WorkspaceLayout>
   );
 }
