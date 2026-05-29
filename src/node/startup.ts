@@ -6,12 +6,12 @@ import { loadAppEnv } from "./env.js";
 
 export type StartupOptions = {
   appRoot?: string;
+  envFile?: string;
   cwd?: string;
 };
 
 export type StartupContext = {
   appRoot: string;
-  databaseUrl: string;
   loadedEnvFiles: string[];
   prismaPackagePath: string;
   prismaClientPath: string;
@@ -24,30 +24,25 @@ export function prepareStartup(options: StartupOptions = {}): StartupContext {
     throw new StartupError(`App root does not exist or is not a directory: ${appRoot}`);
   }
 
-  const { env, loadedFiles } = loadAppEnv(appRoot);
-  const databaseUrl = process.env.DATABASE_URL ?? env.DATABASE_URL;
-
-  if (loadedFiles.length === 0) {
-    if (!databaseUrl) {
-      throw new StartupError(
-        `Database configuration is missing. Set DATABASE_URL in the shell environment, or add .env.local or .env to ${appRoot} before starting Prisma Pad.`,
-      );
-    }
-  }
-
-  if (!databaseUrl) {
-    throw new StartupError(
-      `Database configuration is missing. ${loadedFiles.map((file) => path.basename(file)).join(" and ")} did not define DATABASE_URL.`,
-    );
-  }
+  const envFile = options.envFile ? resolveEnvFilePath(appRoot, options.envFile) : undefined;
+  const { loadedFiles } = loadAppEnv(appRoot, { envFile });
 
   return {
     appRoot,
-    databaseUrl,
     loadedEnvFiles: loadedFiles,
     prismaPackagePath: resolvePrismaPackage(appRoot),
     prismaClientPath: resolvePrismaClient(appRoot),
   };
+}
+
+function resolveEnvFilePath(appRoot: string, envFile: string) {
+  const resolved = path.isAbsolute(envFile) ? envFile : path.resolve(appRoot, envFile);
+
+  if (!existsSync(resolved) || !statSync(resolved).isFile()) {
+    throw new StartupError(`Env file does not exist or is not a file: ${resolved}`);
+  }
+
+  return resolved;
 }
 
 function resolvePrismaPackage(appRoot: string) {

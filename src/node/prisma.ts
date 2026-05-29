@@ -42,6 +42,9 @@ export async function createTargetPrismaRuntime(
       log: [{ emit: "event", level: "query" }],
     });
   } catch (error) {
+    if (isMissingDatasourceEnvVarError(error)) {
+      throw missingDatasourceEnvVarError(context, error);
+    }
     if (isMissingGeneratedClientError(error)) {
       throw missingGeneratedClientError(context);
     }
@@ -52,6 +55,9 @@ export async function createTargetPrismaRuntime(
     await client.$connect?.();
   } catch (error) {
     await client.$disconnect?.().catch(() => undefined);
+    if (isMissingDatasourceEnvVarError(error)) {
+      throw missingDatasourceEnvVarError(context, error);
+    }
     if (isMissingGeneratedClientError(error)) {
       throw missingGeneratedClientError(context);
     }
@@ -82,6 +88,10 @@ async function loadPrismaClientModule(context: StartupContext) {
 }
 
 function prismaClientLoadError(context: StartupContext, error: unknown) {
+  if (isMissingDatasourceEnvVarError(error)) {
+    return missingDatasourceEnvVarError(context, error);
+  }
+
   if (isMissingGeneratedClientError(error)) {
     return missingGeneratedClientError(context);
   }
@@ -98,7 +108,21 @@ function missingGeneratedClientError(context: StartupContext) {
 function prismaClientGenerationError(context: StartupContext, error: unknown) {
   const detail = error instanceof Error && error.message ? ` ${error.message}` : "";
   return new StartupError(
-    `Could not initialize the generated Prisma Client for ${context.appRoot}.${detail} Run prisma generate in the target app and verify DATABASE_URL points at a reachable development database.`,
+    `Could not initialize the generated Prisma Client for ${context.appRoot}.${detail} Run prisma generate in the target app and verify the Prisma datasource URL points at a reachable development database.`,
+  );
+}
+
+function missingDatasourceEnvVarError(context: StartupContext, error: unknown) {
+  const envVarName = extractMissingDatasourceEnvVarName(error) ?? "the configured datasource env var";
+  const loadedEnvFiles =
+    context.loadedEnvFiles.length > 0
+      ? `Loaded env files: ${context.loadedEnvFiles
+          .map((file) => path.basename(file))
+          .join(", ")}.`
+      : `No env files were loaded from ${context.appRoot}.`;
+
+  return new StartupError(
+    `Database configuration is missing. Your Prisma schema expects ${envVarName}, but it was not found in the shell environment or loaded env files. ${loadedEnvFiles} Add ${envVarName} to .env.local, .env, your --env-file, or export it before starting Prisma Pad.`,
   );
 }
 
@@ -120,4 +144,18 @@ function isMissingGeneratedClientError(error: unknown) {
     message.includes(".prisma/client") ||
     message.includes("generated prisma client")
   );
+}
+
+function isMissingDatasourceEnvVarError(error: unknown) {
+  return extractMissingDatasourceEnvVarName(error) !== undefined;
+}
+
+function extractMissingDatasourceEnvVarName(error: unknown) {
+  if (!(error instanceof Error)) return undefined;
+
+  const match = error.message.match(
+    /Environment variable not found:\s*["'`]?([A-Za-z_][A-Za-z0-9_]*)["'`]?/i,
+  );
+
+  return match?.[1];
 }
