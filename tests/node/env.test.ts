@@ -73,6 +73,30 @@ describe("loadAppEnv", () => {
       ".env",
     ]);
   });
+
+  it("gives an explicit env file precedence over default env files", () => {
+    originalDatabaseUrl = process.env.DATABASE_URL;
+    delete process.env.DATABASE_URL;
+    const appRoot = makeTempApp();
+    const explicitEnvFile = path.join(appRoot, ".env.dev.local");
+    writeFileSync(path.join(appRoot, ".env"), "DATABASE_URL=postgres://base\nSHARED=base\n");
+    writeFileSync(path.join(appRoot, ".env.local"), "DATABASE_URL=postgres://local\n");
+    writeFileSync(explicitEnvFile, "DATABASE_URL=postgres://dev\nDEV_ONLY=true\n");
+
+    const result = loadAppEnv(appRoot, { envFile: explicitEnvFile });
+
+    expect(result.env).toMatchObject({
+      DATABASE_URL: "postgres://dev",
+      SHARED: "base",
+      DEV_ONLY: "true",
+    });
+    expect(process.env.DATABASE_URL).toBe("postgres://dev");
+    expect(result.loadedFiles.map((file) => path.basename(file))).toEqual([
+      ".env.dev.local",
+      ".env.local",
+      ".env",
+    ]);
+  });
 });
 
 function makeTempApp() {

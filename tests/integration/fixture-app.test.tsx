@@ -98,7 +98,6 @@ describe("fixture Prisma app integration", () => {
     "starts against a local fixture database and drives metadata, rows, and preview UI",
     async () => {
       expect(context.appRoot).toBe(appRoot);
-      expect(context.databaseUrl).toBe("file:./dev.db");
       expect(context.loadedEnvFiles.map((file) => path.basename(file))).toEqual([".env"]);
       expect(context.prismaClientPath).toContain("@prisma/client");
       expect(context.prismaPackagePath).toContain("prisma");

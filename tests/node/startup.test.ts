@@ -37,6 +37,14 @@ describe("parseArgs", () => {
     });
   });
 
+  it("accepts an explicit env file", () => {
+    expect(parseArgs(["--env-file", ".env.dev.local"])).toEqual({
+      envFile: ".env.dev.local",
+      help: false,
+      open: true,
+    });
+  });
+
   it("can disable browser opening for scripts and CI", () => {
     expect(parseArgs(["--no-open"])).toEqual({ help: false, open: false });
   });
@@ -55,33 +63,54 @@ describe("prepareStartup", () => {
     const context = prepareStartup({ cwd: appRoot });
 
     expect(context.appRoot).toBe(appRoot);
-    expect(context.databaseUrl).toBe("file:./dev.db");
     expect(context.prismaPackagePath).toContain("prisma");
     expect(context.prismaClientPath).toContain("@prisma/client");
   });
 
-  it("uses shell-provided DATABASE_URL when env files are absent", () => {
+  it("does not require env files when relying on the shell environment", () => {
     originalDatabaseUrl = process.env.DATABASE_URL;
     process.env.DATABASE_URL = "postgres://shell";
     const appRoot = makeTempApp({ prisma: true, prismaClient: true });
 
     const context = prepareStartup({ cwd: appRoot });
 
-    expect(context.databaseUrl).toBe("postgres://shell");
     expect(context.loadedEnvFiles).toEqual([]);
   });
 
-  it("reports missing database configuration clearly when env files are absent", () => {
+  it("loads an explicit env file relative to the app root", () => {
+    originalDatabaseUrl = process.env.DATABASE_URL;
+    delete process.env.DATABASE_URL;
+    const appRoot = makeTempApp({ prisma: true, prismaClient: true });
+    writeFileSync(path.join(appRoot, ".env.dev.local"), "DATABASE_URL=postgres://dev\n");
+
+    const context = prepareStartup({ cwd: appRoot, envFile: ".env.dev.local" });
+
+    expect(context.loadedEnvFiles.map((file) => path.basename(file))).toEqual([
+      ".env.dev.local",
+    ]);
+  });
+
+  it("reports a missing explicit env file clearly", () => {
     originalDatabaseUrl = process.env.DATABASE_URL;
     delete process.env.DATABASE_URL;
     const appRoot = makeTempApp({ prisma: true, prismaClient: true });
 
-    expect(() => prepareStartup({ cwd: appRoot })).toThrow(
-      /Database configuration is missing.*Set DATABASE_URL.*\.env\.local or \.env/,
+    expect(() => prepareStartup({ cwd: appRoot, envFile: ".env.dev.local" })).toThrow(
+      /Env file does not exist.*\.env\.dev\.local/,
     );
   });
 
-  it("reports missing database configuration clearly", () => {
+  it("does not require a literal DATABASE_URL during startup preflight", () => {
+    originalDatabaseUrl = process.env.DATABASE_URL;
+    delete process.env.DATABASE_URL;
+    const appRoot = makeTempApp({ prisma: true, prismaClient: true });
+
+    const context = prepareStartup({ cwd: appRoot });
+
+    expect(context.loadedEnvFiles).toEqual([]);
+  });
+
+  it("allows env files that do not define DATABASE_URL during startup preflight", () => {
     originalDatabaseUrl = process.env.DATABASE_URL;
     delete process.env.DATABASE_URL;
     const appRoot = makeTempApp({
@@ -90,9 +119,9 @@ describe("prepareStartup", () => {
       prismaClient: true,
     });
 
-    expect(() => prepareStartup({ cwd: appRoot })).toThrow(
-      /Database configuration is missing.*DATABASE_URL/,
-    );
+    const context = prepareStartup({ cwd: appRoot });
+
+    expect(context.loadedEnvFiles.map((file) => path.basename(file))).toEqual([".env"]);
   });
 
   it("reports missing Prisma package clearly", () => {
@@ -172,13 +201,29 @@ describe("createTargetPrismaRuntime", () => {
       /Could not initialize.*schema engine unavailable.*prisma generate/,
     );
   });
+
+  it("reports the datasource env var Prisma Client expects", async () => {
+    originalDatabaseUrl = process.env.DATABASE_URL;
+    delete process.env.DATABASE_URL;
+    const appRoot = makeTempApp({
+      env: "APP_ENV=development\n",
+      prisma: true,
+      prismaClient: "missing-datasource-env",
+    });
+    const context = prepareStartup({ cwd: appRoot });
+
+    await expect(createTargetPrismaRuntime(context)).rejects.toThrow(StartupError);
+    await expect(createTargetPrismaRuntime(context)).rejects.toThrow(
+      /Prisma schema expects POSTGRES_URL.*\.env/,
+    );
+  });
 });
 
 function makeTempApp(
   options: {
     env?: string;
     prisma?: boolean;
-    prismaClient?: boolean | "missing-generated" | "connect-failure";
+    prismaClient?: boolean | "missing-generated" | "connect-failure" | "missing-datasource-env";
   } = {},
 ) {
   const dir = mkdtempSync(path.join(tmpdir(), "prisma-pad-startup-"));
@@ -213,7 +258,7 @@ function makeTempApp(
 }
 
 function prismaClientFixture(
-  kind: true | "missing-generated" | "connect-failure",
+  kind: true | "missing-generated" | "connect-failure" | "missing-datasource-env",
 ) {
   if (kind === "missing-generated") {
     return "throw new Error('@prisma/client did not initialize yet. Please run prisma generate.');\n";
@@ -224,6 +269,20 @@ function prismaClientFixture(
 class PrismaClient {
   async $connect() {
     throw new Error('schema engine unavailable');
+  }
+  async $disconnect() {
+    globalThis.__prismaViewerTestEvents = [...(globalThis.__prismaViewerTestEvents ?? []), 'disconnect'];
+  }
+}
+module.exports = { PrismaClient };
+`;
+  }
+
+  if (kind === "missing-datasource-env") {
+    return `
+class PrismaClient {
+  async $connect() {
+    throw new Error('Environment variable not found: POSTGRES_URL.');
   }
   async $disconnect() {
     globalThis.__prismaViewerTestEvents = [...(globalThis.__prismaViewerTestEvents ?? []), 'disconnect'];

@@ -10,6 +10,7 @@ import { prepareStartup } from "./startup.js";
 
 type CliOptions = {
   appRoot?: string;
+  envFile?: string;
   host?: string;
   open: boolean;
   port?: number;
@@ -25,7 +26,7 @@ export async function main(argv = process.argv.slice(2)) {
       return 0;
     }
 
-    const context = prepareStartup({ appRoot: options.appRoot });
+    const context = prepareStartup({ appRoot: options.appRoot, envFile: options.envFile });
     const { url } = await startViewerServer(context, {
       host: options.host,
       port: options.port,
@@ -63,6 +64,10 @@ export function parseArgs(argv: string[]): CliOptions {
 
     if (arg === "--help" || arg === "-h") {
       options.help = true;
+    } else if (arg === "--env-file") {
+      options.envFile = requireValue(argv, ++index, "--env-file");
+    } else if (arg.startsWith("--env-file=")) {
+      options.envFile = arg.slice("--env-file=".length);
     } else if (arg === "--root") {
       options.appRoot = requireValue(argv, ++index, "--root");
     } else if (arg.startsWith("--root=")) {
@@ -131,17 +136,18 @@ function parsePort(value: string) {
 }
 
 function helpText() {
-  return `Usage: prisma-pad [app-root] [--root <path>] [--host <host>] [--port <port>] [--no-open]
+  return `Usage: prisma-pad [app-root] [--root <path>] [--env-file <path>] [--host <host>] [--port <port>] [--open] [--no-open]
 
 Starts Prisma Pad against a local Prisma app.
 
 Options:
-  --root <path>   Target app root. Defaults to the current working directory.
-  --host <host>   Host for the local viewer server. Defaults to 127.0.0.1.
-  --port <port>   Port for the local viewer server. Defaults to an open port.
-  --open          Open the viewer in the default browser. Enabled by default.
-  --no-open       Print the viewer URL without opening a browser.
-  -h, --help      Show this help.`;
+  --root <path>      Target app root. Defaults to the current working directory.
+  --env-file <path>  Additional env file to load. Relative paths resolve from the app root.
+  --host <host>      Host for the local viewer server. Defaults to 127.0.0.1.
+  --port <port>      Port for the local viewer server. Defaults to an open port.
+  --open             Open the viewer in the default browser. Enabled by default.
+  --no-open          Print the viewer URL without opening a browser.
+  -h, --help         Show this help.`;
 }
 
 function isDirectCliInvocation() {

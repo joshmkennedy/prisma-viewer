@@ -41,5 +41,7 @@ jobs:
           version: npm run version-packages
           publish: npm run release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Use a PAT or GitHub App token when the repository setting blocks
+          # GitHub Actions from creating pull requests with GITHUB_TOKEN.
+          GITHUB_TOKEN: ${{ secrets.CHANGESETS_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
           NPM_CONFIG_PROVENANCE: true

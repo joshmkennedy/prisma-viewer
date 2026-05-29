@@ -1936,7 +1936,6 @@ describe("createPrismaApiMiddleware", () => {
 function makeContext(): StartupContext {
   return {
     appRoot: "/target-app",
-    databaseUrl: "file:./dev.db",
     loadedEnvFiles: ["/target-app/.env.local"],
     prismaPackagePath: "/target-app/node_modules/prisma/package.json",
     prismaClientPath: "/target-app/node_modules/@prisma/client/index.js",

@@ -6,20 +6,21 @@ export type EnvLoadResult = {
   loadedFiles: string[];
 };
 
-export function loadAppEnv(appRoot: string): EnvLoadResult {
+export type EnvLoadOptions = {
+  envFile?: string;
+};
+
+export function loadAppEnv(appRoot: string, options: EnvLoadOptions = {}): EnvLoadResult {
   const envFile = path.join(appRoot, ".env");
   const localEnvFile = path.join(appRoot, ".env.local");
   const loadedFiles: string[] = [];
   const env: Record<string, string> = {};
 
-  if (existsSync(envFile)) {
-    Object.assign(env, parseEnvFile(readFileSync(envFile, "utf8")));
-    loadedFiles.push(envFile);
-  }
+  loadEnvFile(envFile, env, loadedFiles);
+  loadEnvFile(localEnvFile, env, loadedFiles);
 
-  if (existsSync(localEnvFile)) {
-    Object.assign(env, parseEnvFile(readFileSync(localEnvFile, "utf8")));
-    loadedFiles.unshift(localEnvFile);
+  if (options.envFile) {
+    loadEnvFile(options.envFile, env, loadedFiles);
   }
 
   for (const [key, value] of Object.entries(env)) {
@@ -27,6 +28,23 @@ export function loadAppEnv(appRoot: string): EnvLoadResult {
   }
 
   return { env: { ...env }, loadedFiles };
+}
+
+function loadEnvFile(
+  envFile: string,
+  env: Record<string, string>,
+  loadedFiles: string[],
+) {
+  if (!existsSync(envFile)) return;
+
+  Object.assign(env, parseEnvFile(readFileSync(envFile, "utf8")));
+
+  const existingIndex = loadedFiles.indexOf(envFile);
+  if (existingIndex !== -1) {
+    loadedFiles.splice(existingIndex, 1);
+  }
+
+  loadedFiles.unshift(envFile);
 }
 
 export function parseEnvFile(contents: string): Record<string, string> {
